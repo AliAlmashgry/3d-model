@@ -54,11 +54,12 @@ model-viewer {
 }
 
 /* --- Part callout hotspots ---
-   model-viewer positions the whole .Hotspot button at the 3D anchor point,
-   so the dot has to stay pinned to that same spot -- it's given zero size
-   and centered exactly there. The line+label live in a separate "wing"
-   that's absolutely positioned off of that same point, free to extend
+  model-viewer positions the whole .Hotspot button at the 3D anchor point,
+  so the dot has to stay pinned to that same spot -- it's given zero size
+  and centered exactly there. The line+label live in a separate "wing"
+  that's absolutely positioned off of that same point, free to extend
    either direction without ever dragging the dot along with it. */
+/* --- Part callout hotspots --- */
 .Hotspot {
   position: relative;
   width: 0;
@@ -68,6 +69,13 @@ model-viewer {
   padding: 0;
   cursor: pointer;
   font-family: sans-serif;
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+
+.Hotspot:not([data-visible]) {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .HotspotDot {
@@ -77,11 +85,33 @@ model-viewer {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background-color: var(--color-ink);
+  background-color: var(--color-accent);
   border: 2px solid var(--color-paper);
-  box-shadow: 0 0 0 1px var(--color-ink);
+  box-shadow: 0 0 0 1px var(--color-paper);
   transform: translate(-50%, -50%);
   transition: background-color var(--transition-fast);
+  z-index: 1;
+}
+
+.HotspotDot::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background-color: var(--color-accent);
+  animation: hotspot-pulse 1.8s ease-out infinite;
+  z-index: -1;
+}
+
+@keyframes hotspot-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(3.2);
+    opacity: 0;
+  }
 }
 
 .HotspotWing {

@@ -11,7 +11,7 @@ const HOTSPOTS = [
     id: 'frontBumper',
     label: 'Front Bumper',
     position: '0 0.38 2.44',
-    normal: '0 0 1',
+    normal: '0 0 1', // Faces purely forward
     parts: [
       'Front Bumper Cover',
       'Upper Grille',
@@ -27,7 +27,7 @@ const HOTSPOTS = [
     id: 'rearBumper',
     label: 'Rear Bumper',
     position: '0 0.38 -2.43',
-    normal: '0 0 -1',
+    normal: '0 0 -1', // Faces purely backward
     parts: [
       'Rear Bumper Cover',
       'Rear Reflectors',
@@ -41,7 +41,7 @@ const HOTSPOTS = [
     id: 'hood',
     label: 'Hood',
     position: '0 0.85 1.7',
-    normal: '0 0.6 0.8',
+    normal: '0 0.6 0.8', // Angled slightly upward
     parts: [
       'Hood Panel',
       'Hood Insulator Pad',
@@ -55,7 +55,7 @@ const HOTSPOTS = [
     id: 'trunk',
     label: 'Trunk',
     position: '0 1.0 -2.1',
-    normal: '0 0.6 -0.8',
+    normal: '0 0.6 -0.8', // Angled slightly upward
     parts: [
       'Trunk Lid',
       'Trunk Weatherstrip Seal',
@@ -65,6 +65,33 @@ const HOTSPOTS = [
       'Trunk Liner/Trim Panel',
     ],
   },
+  // --- ADDED SIDE HOTSPOTS ---
+  {
+    id: 'rightProfile',
+    label: 'Right Profile',
+    position: '-0.9 0.6 0',
+    normal: '-1 0 0', // Faces purely outward to the right
+    parts: [
+      'Right Front Door',
+      'Right Rear Door',
+      'Right Fender',
+      'Right Side Skirt',
+      'Right Mirror'
+    ],
+  },
+  {
+    id: 'leftProfile',
+    label: 'Left Profile',
+    position: '0.9 0.6 0',
+    normal: '1 0 0', // Faces purely outward to the left
+    parts: [
+      'Left Front Door',
+      'Left Rear Door',
+      'Left Fender',
+      'Left Side Skirt',
+      'Left Mirror'
+    ],
+  }
 ];
 
 // ---------------------------------------------------------------------------
@@ -100,6 +127,7 @@ function createHotspotElement({ id, label, position, normal }) {
   button.dataset.panel = id;
   button.dataset.position = position;
   button.dataset.normal = normal;
+  button.setAttribute('data-visibility-attribute', 'visible');
   button.innerHTML = `
     <span class="HotspotDot"></span>
     <span class="HotspotLine"></span>
