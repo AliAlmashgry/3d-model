@@ -10,6 +10,16 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
+<script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+
+<!-- Start the 4MB GLB downloading during HTML parse. loading="eager" on the
+     <model-viewer> only helps once that element exists, and this app is compiled
+     in-browser by Babel standalone — React doesn't mount for a while, so without
+     this the fetch waits on the compile. Warmed into the HTTP cache here, the
+     element picks it up instantly when it mounts. as="fetch" + crossorigin match
+     how three.js/GLTFLoader requests it, so it's one download, not two. -->
+<link rel="preload" href="assests/car.glb?v=3" as="fetch" crossorigin="anonymous" />
+
 <style>
   :root {
     --white: #FFFFFF;
@@ -52,8 +62,37 @@
      side-gutter surround on wide-screen viewports (>480px). */
   html { background: var(--white); }
 
+  /* THE DOCUMENT ITSELF NEVER SCROLLS. Every screen here is a fixed
+     full-viewport overlay, so document scroll is always a bug — and it was one:
+     `min-height: 100vh` made the page taller than the visible area (on mobile
+     `100vh` is the LARGE viewport, i.e. URL bar hidden), so the page picked up
+     ~60-100px of phantom scroll, and scrolling into that strip exposed the top
+     of a PARKED overlay screen (.locate-screen sits at translateY(100%) just
+     below the fold) — its .loc-carbar read as a duplicate of the header.
+     `dvh` alone fixed iOS but not Android Chromium, whose URL-bar handling
+     resolves the viewport units differently, so the height is now LOCKED and
+     overflow hidden: no viewport-unit arithmetic can reintroduce the scroll on
+     any engine. #root owns the only scrollport, so content that genuinely
+     overflows (e.g. landscape) still scrolls — inside the 480px shell, where it
+     can't drag the parked overlays into view. overscroll-behavior kills iOS
+     rubber-band / pull-to-refresh on top of that. */
+  html, body { overscroll-behavior: none; }
+  /* Second layer of zoom blocking, independent of the viewport meta tag.
+     `pan-x pan-y` omits `pinch-zoom`, so Chromium refuses pinch AND double-tap
+     zoom for touches starting anywhere in the page. Panning is still allowed,
+     so the parts list inside the sheet keeps scrolling; elements that own their
+     gestures (.loc-carbar, .ps-drag-zone, .car-drag-3d) declare the stricter
+     `touch-action: none` and are unaffected. NOTE: a browser-level override
+     (Chrome's "Force enable zoom" accessibility setting, iOS Safari's ignoring
+     of user-scalable=no) deliberately defeats both layers — that is by design
+     and no page can opt out of it. */
+  html, body { touch-action: pan-x pan-y; }
+  html { height: 100%; }
+
   body {
-    min-height: 100vh;
+    height: 100vh;   /* fallback for engines without dvh */
+    height: 100dvh;
+    overflow: hidden;
     display: flex;
     justify-content: center;
     background: var(--canvas-2);
@@ -63,7 +102,8 @@
     width: 100%;
     max-width: 480px;
     background: var(--canvas);
-    min-height: 100vh;
+    height: 100%;
+    overflow-y: auto;
     position: relative;
     overflow-x: clip;
     display: flex;
@@ -2358,15 +2398,39 @@
        the global menu/cart icons. */
     z-index: 40;
     display: flex; flex-direction: column;
+    /* clip, NOT hidden. `hidden` still makes this a scroll container — it only
+       hides the scrollbar — and this screen has real scrollable overflow: the
+       peeking .parts-sheet is translateY'd ~404px past the bottom edge, and
+       Chrome counts transformed descendants in the scrollable overflow region.
+       Android Chromium will happily touch-scroll that (desktop Chrome won't,
+       which is why it only showed on device). `clip` isn't a scroll container
+       at all, so there is no scrollTop to move on any engine. The `hidden`
+       line above is the fallback for browsers without overflow:clip. */
     overflow: hidden;
+    overflow: clip;
     /* Always-mounted sheet — sits off-screen below by default, slides up
        when .is-open. Curve: Apple-style ease-out so the rise decelerates
        into place rather than snapping. */
     transform: translateY(100%);
     transition: transform 0.34s cubic-bezier(.22, 1, .36, 1);
     will-change: transform;
+    /* Belt-and-braces on top of the locked page height: translateY(100%) parks
+       this exactly one viewport below the fold, which only stays off-screen
+       while "one viewport" means the same thing for a position:fixed box and
+       for the visible area — an assumption mobile URL bars break. Hiding it
+       outright makes the peeking-header bug structurally impossible. The 0.34s
+       visibility delay lets the slide-DOWN finish before it blinks out; on the
+       way up visibility flips immediately (0s, no delay) so the rise is seen. */
+    visibility: hidden;
+    transition: transform 0.34s cubic-bezier(.22, 1, .36, 1),
+                visibility 0s linear 0.34s;
   }
-  .locate-screen.is-open { transform: translateY(0); }
+  .locate-screen.is-open {
+    transform: translateY(0);
+    visibility: visible;
+    transition: transform 0.34s cubic-bezier(.22, 1, .36, 1),
+                visibility 0s linear 0s;
+  }
   @media (prefers-reduced-motion: reduce) {
     .locate-screen { transition: none; }
   }
@@ -2486,35 +2550,106 @@
     border-color: var(--canvas-2);
     background: none;
   }
-  /* View label — static "which face am I looking at" indicator above the cube.
-     Re-mounted (keyed on visibleZone in JSX) so the entry animation replays on every
-     zone change. The 24×2 red bar is persistent — only the text animates. */
-  .view-label {
+  /* ── Zone ring ──────────────────────────────────────────────────────────
+     Replaces .view-label on both car screens. The car's turntable seen from
+     above: four zone names + four chevrons ride a flattened ellipse. JS
+     projects each item (dx = sinθ·Rx, dy = cosθ·Ry, depth = (1−cosθ)/2 →
+     scale/opacity/z); CSS only transitions each item between projected
+     snapshots, on the car's own settle cadence — same bezier as .car-cube,
+     duration driven inline through --zr-ms (settleMs / 300ms). */
+  .zone-ring {
     position: absolute;
-    top: 18px; left: 50%;
-    transform: translateX(-50%);
-    z-index: 5;
-    pointer-events: none;
+    top: 8px;
+    left: 50%;
+    width: 280px;
+    margin-left: -140px;      /* physical centering — immune to dir=rtl */
+    height: 64px;
+    z-index: 5;               /* same slot as the old .view-label */
+    pointer-events: none;     /* only the buttons opt back in */
     font-family: 'Readex Pro', sans-serif;
-    font-size: 15px; font-weight: 600;
-    color: var(--text);
-    line-height: 1;
-    letter-spacing: 0;
-    text-align: center;
-    animation: viewLabelIn 0.22s ease-out;
+    user-select: none;
+    -webkit-user-select: none;
+    animation: zoneRingIn 0.22s ease-out;
   }
-  .view-label::after {
-    content: '';
-    display: block;
-    width: 24px; height: 2px;
-    background: var(--red);
-    border-radius: 1px;
-    margin: 6px auto 0;
-  }
-  /* Subtle: just a soft fade. No motion, no letter-spacing, no slide. */
-  @keyframes viewLabelIn {
+  .zone-ring[data-compact="true"] { top: 4px; height: 54px; }
+
+  /* Subtle: just a soft fade on (re)mount, like the old label. */
+  @keyframes zoneRingIn {
     from { opacity: 0; }
     to   { opacity: 1; }
+  }
+
+  /* Persistent red "front of the turntable" marker — the active label
+     always settles right above it. Replaces the old ::after bar. */
+  .zr-marker {
+    position: absolute;
+    left: 50%;
+    width: 24px; height: 2px;
+    margin-left: -12px;
+    background: var(--red);
+    border-radius: 1px;
+    pointer-events: none;
+  }
+
+  /* Ring stops. The button box is NEVER scaled (constant ≥36px hit
+     target); only the inner span scales/fades with depth. */
+  .zr-item, .zr-arrow {
+    position: absolute;
+    left: 50%; top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    pointer-events: auto;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    cursor: pointer;
+    transition: transform var(--zr-ms, 300ms) cubic-bezier(.22, 1, .36, 1);
+    will-change: transform;
+  }
+  .zr-item  { height: 36px; min-width: 48px; padding: 0 6px; }
+  .zr-arrow { width: 36px; height: 36px; }
+
+  .zr-item > span {
+    display: block;
+    font-size: 15px;
+    font-weight: 600;         /* constant weight: no width-jump when active flips */
+    line-height: 1;
+    color: var(--muted);
+    white-space: nowrap;
+    transition: transform var(--zr-ms, 300ms) cubic-bezier(.22, 1, .36, 1),
+                opacity   var(--zr-ms, 300ms) cubic-bezier(.22, 1, .36, 1),
+                color 0.15s ease;   /* hotspot-fade cadence */
+  }
+  .zr-item[data-active="true"] > span { color: var(--text); }
+
+  /* Chevron drawn with borders, not a glyph — dir=rtl bidi-mirrors
+     punctuation like ‹ ›; borders it cannot touch. rotate(45deg) points
+     right, rotate(-135deg) points left (set inline by JS). */
+  .zr-arrow > span {
+    display: block;
+    width: 8px; height: 8px;
+    border-top: 2px solid var(--muted);
+    border-right: 2px solid var(--muted);
+    border-radius: 1px;
+    transition: transform var(--zr-ms, 300ms) cubic-bezier(.22, 1, .36, 1),
+                opacity   var(--zr-ms, 300ms) cubic-bezier(.22, 1, .36, 1);
+  }
+
+  /* Live drag on the 2D screen: the ring re-projects from rot every frame
+     along the TRUE ellipse — transitions off, exactly like
+     .car-cube[data-dragging="true"]. */
+  .zone-ring[data-dragging="true"] .zr-item,
+  .zone-ring[data-dragging="true"] .zr-item > span,
+  .zone-ring[data-dragging="true"] .zr-arrow,
+  .zone-ring[data-dragging="true"] .zr-arrow > span { transition: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .zr-item, .zr-item > span, .zr-arrow, .zr-arrow > span {
+      transition-duration: 1ms !important;
+    }
   }
 
   /* The cube. translateZ(-140) pulls back to fit, faces translateZ(140) push out. */
@@ -2564,18 +2699,66 @@
     to   { transform: scale(1);   opacity: 1; }
   }
 
-  /* Hotspots — anchored to % coords of the 280x280 stage. Fade out during rotation. */
+  /* Hotspots — anchored to % coords of the 280x280 stage. Fade out during rotation.
+     z-index sits above the peek-to-open scrim (9) so tapping hotspot B right after
+     hotspot A registers directly instead of the first tap just dismissing the
+     scrim (see .ps-scrim) — but stays below the sheet itself (12) so once the
+     sheet is actually covering this area, its content wins instead of a stray dot
+     floating on top of the parts list. */
   .hotspots-overlay {
     position: absolute; inset: 0;
     pointer-events: none;
-    transition: opacity 0.32s ease;
+    transition: opacity 0.15s ease;
+    z-index: 11;
   }
   .hotspots-overlay[data-hidden="true"] { opacity: 0; }
   /* While the screen is closed, keep the overlay snapped to hidden (no fade) so a
      reopen doesn't fade the previous zone's pulses out during the entrance spin.
-     They fade back in (0.32s) only once the spin settles. */
+     They fade back in (0.15s) only once the spin settles. */
   .locate-screen:not(.is-open) .hotspots-overlay { opacity: 0; transition: none; }
   .hotspots-overlay > * { pointer-events: auto; }
+
+  /* ---- Native <model-viewer> hotspots (3D screen only) ----
+     These are slotted into model-viewer, which positions each one by projecting
+     its data-position. Two overrides of the base .hotspot rules are required:
+
+     1. transform: none — the base .hotspot uses translate(-50%, -50%) because
+        it is positioned by its top-left corner. model-viewer instead centres
+        the slotted element on the anchor point already, so keeping the shift
+        double-counts it and lands every dot 6px up and to the left (half the
+        12px dot). Measured: removing it takes the offset to exactly zero.
+     2. position: relative, NOT absolute. Absolute would take the button out of
+        the flow model-viewer positions it in; it also needs to stay a
+        containing block for the 40px .hotspot::before tap target.
+     3. direction: rtl restores the Arabic label direction, which the
+        `direction: ltr` on model-viewer (see .car-stage-3d) would otherwise
+        flip. Safe: a hotspot's POSITION is decided by its parent's direction
+        inside the shadow DOM, so setting it here only affects the label text
+        — verified it does not move the dot.
+
+     pointer-events mirrors the .hotspots-overlay pattern it replaces — see the
+     model-viewer rule in .car-stage-3d for why the element itself is inert.
+
+     Selector is .hotspot.hotspot-3d, not .hotspot-3d: the base .hotspot rule
+     below has equal single-class specificity and comes later in this sheet, so
+     a single class would lose these overrides on source order alone. */
+  .hotspot.hotspot-3d {
+    position: relative;
+    transform: none;
+    direction: rtl;
+    pointer-events: auto;
+  }
+  /* Fade during rotation / drag / model load, ported from
+     .hotspots-overlay[data-hidden] now that there is no overlay wrapper. */
+  .car-stage-3d model-viewer > .hotspot-3d { transition: opacity 0.15s ease; }
+  .car-stage-3d[data-hotspots-hidden="true"] model-viewer > .hotspot-3d { opacity: 0; }
+  /* Closed screen: snap to hidden with no fade, so reopening doesn't play the
+     previous zone's dots out during the entrance spin (mirrors the
+     .locate-screen:not(.is-open) .hotspots-overlay rule above). */
+  .locate-screen:not(.is-open) .car-stage-3d model-viewer > .hotspot-3d {
+    opacity: 0; transition: none;
+  }
+
   .hotspot {
     position: absolute;
     transform: translate(-50%, -50%);
@@ -2641,6 +2824,125 @@
   .hotspot:hover .hotspot-label,
   .hotspot:focus-visible .hotspot-label { opacity: 1; transform: translate(-50%, 0); }
 
+  /* 3D stage — capped at 440px and centered (like the 2D cube's fixed 280x280
+     box) rather than stretched edge-to-edge. .locate-screen is position:fixed
+     with inset:0, which escapes #root's max-width:480px cap — on a wide
+     desktop viewport an edge-to-edge width would render the car much smaller
+     relative to the box than on mobile, throwing off the hotspot % coords
+     (tuned assuming the car roughly fills the box, same as the 2D cube's
+     object-fit:contain framing). Capping width keeps that assumption true at
+     every viewport width. Taller than the 2D cube's box so the model isn't
+     cropped top/bottom. Navigation is a left/right swipe, handled entirely in
+     JS (see CarStage3D's pointer handlers). */
+  .car-stage-3d {
+    position: relative;
+    /* Chrome above + below the stage that the square has to fit between:
+       .loc-carbar (~65px) + .loc-head (~40px) + the in-flow .drag-hint (~39px)
+       + the sheet's 76px peek, plus a small buffer. Safe-area insets are added
+       on top since the carbar pads for the notch and the sheet sits on the home
+       indicator. */
+    --stage-chrome: calc(240px + env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px));
+    /* Square, sized to whichever runs out first: the column's width, the 440px
+       cap, or the height left between the chrome. Staying SQUARE is the point —
+       the hotspot x/y are percentages of this box calibrated against a square
+       render, so uniform scaling keeps them on the car while a stretched box
+       would slide them off it. Previously a rigid 440px, which simply got
+       clipped on any screen shorter than ~640px. */
+    width: min(100%, 440px, calc(100dvh - var(--stage-chrome)));
+    aspect-ratio: 1 / 1;
+    height: auto;
+    flex: 0 0 auto;
+    margin: 0 auto;
+    /* The swipe surface is .car-drag-3d, NOT this box — see the note there for
+       why the gesture is inset instead of spanning the stage. This element only
+       frames the render, so it must NOT claim touches: a `touch-action: none`
+       here would still reach the screen edges (the stage is full-bleed at every
+       phone width we measured) and swallow the system back-swipe, which is the
+       whole problem the inset strip exists to fix. `auto` is safe because the
+       locate screen is a fixed, non-scrolling overlay — there is nothing here
+       for a stray pan to move. */
+    touch-action: auto;
+  }
+  /* Swipe surface for the 3D stage — a centred column matching the 2D screen's
+     .car-drag (300px, capped at 80%), not the full width of the stage.
+
+     It is an OVERLAY SIBLING of model-viewer rather than a wrapper around it,
+     because .car-stage-3d has to stay full-size and square: the hotspot x/y
+     percentages are calibrated against that box, so wrapping the model in a
+     300px column would shrink the render and drag every dot off the car.
+
+     Layering, both bounds matter:
+       - below model-viewer's z-index 11, so hotspot dots still get their taps;
+       - below .ps-scrim's z-index 9, so a tap on the bare model still falls
+         through to the scrim and collapses the parts sheet.
+     touch-action: none lives here (not on the stage) for the reason the stage
+     rule above spells out — every gesture inside the column is the JS swipe
+     handler's, while the screen edges stay free for the system back-swipe,
+     exactly as .car-drag leaves them on the 2D screen.
+
+     No pointer handlers are bound to this element; CarStage3D keeps them on
+     .car-stage-3d and only measures this rect (see inDragZone). Binding them
+     here instead looks tidier and is wrong: as a SIBLING of model-viewer it
+     never sees a gesture that starts on a hotspot dot, so dragging from a dot
+     stopped rotating the car — and any drag released outside the column left a
+     stale pointer in pointersRef, which made the very next swipe read as a
+     pinch and do nothing. */
+  .car-drag-3d {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 300px; max-width: 80%;
+    /* Runs from the top of the stage and keeps going PAST its bottom edge.
+       .car-stage-3d is square, so bottom: 0 ended the swipe zone at the foot of
+       the car and left a dead band (~220px on a 390x844 phone) between there
+       and the peeking sheet — drag anywhere in it, including on the "اسحب
+       للدوران" hint, and nothing rotated. The 2D screen never had that gap:
+       .car-drag is align-self: stretch inside a flex:1 .orbit-stage, so it
+       reaches well below the cube.
+       Overshooting to 100dvh is deliberate rather than a measured gap, because
+       the stage's own height is a min() of three terms and its bottom edge is
+       not expressible here. Two things bound it in practice, both of which sit
+       ABOVE this element and so take those touches themselves: the parts sheet
+       (z-index 12) and, when open, .ps-scrim (z-index 9). .locate-screen's
+       overflow: clip discards whatever is left below the fold. The .drag-hint
+       in between is pointer-events: none, so drags pass straight through to
+       here — which is the point. */
+    top: 0;
+    height: 100dvh;
+    z-index: 1;
+    touch-action: none;
+    cursor: grab;
+  }
+  .car-drag-3d:active { cursor: grabbing; }
+  .car-stage-3d model-viewer {
+    width: 100%; height: 100%;
+    --poster-color: transparent;
+    /* Hotspots are slotted inside model-viewer now, so model-viewer itself has
+       to clear the .ps-scrim (z-index 9) for a dot to stay tappable while the
+       parts sheet is open — that's what lets you tap hotspot B straight after
+       hotspot A instead of spending a tap dismissing the scrim.
+       pointer-events: none keeps that from also making the CAR surface swallow
+       taps: bare-model taps fall through to the scrim and collapse the sheet,
+       exactly as before. The hotspots re-enable pointer-events on themselves
+       (.hotspot-3d), the same trick .hotspots-overlay uses for the 2D screen.
+       Do NOT move this z-index onto .car-stage-3d — that would lift the whole
+       stage above the scrim and break sheet dismissal. */
+    z-index: 11;
+    pointer-events: none;
+    /* The page is dir="rtl", and that inherits into model-viewer's shadow DOM,
+       where each hotspot is laid out in normal flow inside a full-width box.
+       Under RTL the inline-start edge is the RIGHT one, so every dot landed
+       ~400px (stage width minus dot width) off to the side. Forcing LTR here
+       makes that flow start from the left, putting each dot on its anchor.
+       The Arabic label gets direction: rtl back on .hotspot.hotspot-3d. */
+    direction: ltr;
+    /* Never dim a hotspot. model-viewer's default fades one to 0.25 when its
+       data-normal faces away from the camera; several of our normals came back
+       pointing into the body (bumper-f is "0 0 -1"), which would fade dots that
+       are plainly visible today. Zone gating already decides what shows. */
+    --min-hotspot-opacity: 1;
+  }
+
   /* Drag hint pill — sits above the peeking sheet (76px peek + 12px gap + safe margin) */
   .drag-hint {
     position: absolute;
@@ -2655,10 +2957,29 @@
     box-shadow: var(--shadow-sm);
     z-index: 5;
   }
+  /* 3D screen only (the 2D screen's hint is inside .orbit-stage, which is
+     flex:1 and so has a stable bottom edge). Here the hint is a sibling of the
+     now dynamically-sized .car-stage-3d, so a fixed offset from the screen
+     bottom drifts onto the car as the stage shrinks. Putting it in flow parks
+     it just under the stage at every size. nowrap + fit-content also fixes the
+     two-line wrap the absolute version had: `left: 50%` with no `right` left it
+     only half the screen to lay out in. */
+  .car-stage-3d ~ .drag-hint {
+    position: static;
+    transform: none;
+    width: fit-content;
+    white-space: nowrap;
+    margin: 10px auto 0;
+    flex-shrink: 0;
+  }
 
   /* Scrim — covers the cube area while the sheet is expanded. Click anywhere on
-     it to collapse the sheet back to peek. z-index sits just under the sheet (10)
-     so the sheet stays interactive on top of it. Fades in for a soft transition. */
+     it to collapse the sheet back to peek. z-index sits under BOTH the hotspots
+     (11) and the sheet (12): a direct tap on another hotspot must win over the
+     scrim so picking hotspot B right after hotspot A works in one tap instead of
+     needing a throwaway tap to dismiss the scrim first, but the scrim still sits
+     above the sheet, keeping the sheet itself interactive on top of it. Fades in
+     for a soft transition. */
   .ps-scrim {
     position: absolute;
     inset: 0;
@@ -2682,7 +3003,7 @@
     border-top-right-radius: 16px;
     box-shadow: var(--shadow-lg);
     transition: transform 0.42s cubic-bezier(.6,.2,.2,1);
-    z-index: 10;
+    z-index: 12;
     /* Fixed height so switching category chips doesn't grow/shrink the sheet —
        the parts list inside scrolls instead. Peek mode hides most of it via
        transform; the full height is still ~75% of the screen. */
@@ -7064,7 +7385,9 @@
 
 /* ===== STANDALONE HOME (Visual Search launcher) ===== */
 .vss-home {
-  min-height: 100dvh;
+  /* % of #root's locked height, not a viewport unit — #root is the scrollport
+     now, so this fills it exactly instead of racing the URL bar. */
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -7102,10 +7425,40 @@
   display: inline-flex; align-items: center; gap: 8px;
   font-size: 14px; font-weight: 600; color: var(--red, #e4002b);
 }
+
 </style>
 </head>
 <body>
 <div id="root"></div>
+
+<script>
+/* Third layer of zoom blocking, for iOS Safari specifically — it has ignored
+   `user-scalable=no` and `maximum-scale` since iOS 10, so the meta tag alone
+   does nothing there. Safari fires non-standard gesture* events for pinch;
+   preventing them stops the zoom. Also swallows the double-tap-to-zoom that
+   slips past `touch-action` on older WebKit. Plain script (not text/babel) so
+   it is active immediately rather than after Babel compiles the app. */
+(function () {
+  ["gesturestart", "gesturechange", "gestureend"].forEach(function (evt) {
+    document.addEventListener(evt, function (e) { e.preventDefault(); }, { passive: false });
+  });
+  /* Double-tap-to-zoom guard. Deliberately NOT the usual "any touchend within
+     300ms" snippet — preventDefault on touchend also cancels the synthesized
+     click, so that version eats legitimate quick taps on two different controls
+     (hotspot A then hotspot B, a chip then a part). Only a repeat tap in
+     essentially the SAME SPOT is a double-tap, so require both a short interval
+     and <30px of travel before swallowing it. */
+  var lastTap = { t: 0, x: 0, y: 0 };
+  document.addEventListener("touchend", function (e) {
+    var touch = e.changedTouches && e.changedTouches[0];
+    if (!touch) return;
+    var now = Date.now();
+    var near = Math.abs(touch.clientX - lastTap.x) < 30 && Math.abs(touch.clientY - lastTap.y) < 30;
+    if (now - lastTap.t <= 300 && near) e.preventDefault();
+    lastTap = { t: now, x: touch.clientX, y: touch.clientY };
+  }, { passive: false });
+})();
+</script>
 
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
@@ -7224,6 +7577,12 @@ const IconCar = () => (
     <path d="M3 14h26M5 14V11l3-5h16l3 5v3" />
     <circle cx="9" cy="14.5" r="2" />
     <circle cx="23" cy="14.5" r="2" />
+  </svg>
+);
+const IconCube = () => (
+  <svg viewBox="0 0 24 24" {...stroke}>
+    <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
+    <path d="M12 12l8-4.5M12 12v9M12 12L4 7.5" />
   </svg>
 );
 const IconReset = () => (
@@ -10792,9 +11151,9 @@ function resolveCarImage(name) {
 }
 
 const CURRENT_CAR = {
-  name: "تويوتا لاندكروزر 2022",
-  short: "تويوتا لاندكروزر 2022",
-  image: resolveCarImage("تويوتا لاندكروزر 2022"),
+  name: "تويوتا كامري 2020",
+  short: "تويوتا كامري 2020",
+  image: resolveCarImage("تويوتا كامري 2020"),
 };
 
 /* The user's saved cars (the garage shown in the menu). The active car
@@ -11798,8 +12157,6 @@ const LOC_FACE_IMG = {
   rear:      "assests/car-rear-clean.png",
   sideRight: "assests/car-side-right.png",
 };
-const LOC_ROTATION_BLANK_MS = 450; // hotspots invisible during this much of the rotation
-
 /* Placeholder line-art diagrams. README flags these as placeholders — replace
    with real illustrations when available. */
 function EngineDiagram() {
@@ -11922,6 +12279,115 @@ function CarModel({ rot, view, dragging, settleMs }) {
 
 /* The 3D cube — drag-to-rotate with snap-to-90°. Active zone is derived from
    the snapped face. Hotspots fade out during rotation and re-fade-in once settled. */
+/* ── ZoneRing ────────────────────────────────────────────────────────────────
+   Shared by CarOrbit (2D) and CarStage3D (3D): the four orbit zones + four
+   step chevrons riding a flattened ellipse — the car's own turntable seen
+   from above. `angle` follows CarOrbit's rot semantics: angle ===
+   LOC_ZONE_TARGET_ANGLE[zone] puts that zone front-and-center, and the
+   number is CONTINUOUS (accumulated, never normalized), so the 270→0 wrap
+   animates the short way for free. Mount it WITHOUT a key — remounting
+   would destroy the transitions. */
+const ZR_ORDER = ["front", "sideLeft", "rear", "sideRight"]; // slot i = i*90deg
+
+function ZoneRing({ angle, dragging, settleMs, onPick, flip }) {
+  // Geometry picked once per mount; short phones get a tighter ellipse so
+  // the ring never reaches the top of the car box (~667px viewports leave
+  // only ~22px under the old label position).
+  const [compact] = useState(() => {
+    try { return window.matchMedia("(max-height: 700px)").matches; }
+    catch (e) { return false; }
+  });
+  const G = compact
+    ? { CY: 19, RX: 112, RY: 16, ARX: 90,  ARY: 13, MARKER: 46 }
+    : { CY: 24, RX: 118, RY: 22, ARX: 100, ARY: 18, MARKER: 58 };
+  const sign = flip ? -1 : 1; // calibration escape hatch; both hosts omit it
+
+  const frontIdx = ((Math.round(angle / 90) % 4) + 4) % 4;
+
+  // Project a point at ring angle `deg` (0 = the front stop, near rim).
+  const project = (deg, rx, ry) => {
+    const t = (deg * Math.PI) / 180;
+    const cos = Math.cos(t);
+    const depth = (1 - cos) / 2;      // 0 nearest … 1 farthest
+    return {
+      dx: sign * Math.sin(t) * rx,    // + = physical right (RTL-proof)
+      dy: cos * ry,                   // + = down = near rim of the disc
+      depth: depth,
+      scale: 1 - 0.38 * depth,        // 1.00 / 0.81 / 0.62  (15px → 9.3px min)
+      opacity: 1 - 0.62 * depth,      // 1.00 / 0.69 / 0.38
+    };
+  };
+  const place = (p) =>
+    "translate(calc(-50% + " + p.dx.toFixed(2) + "px), " +
+    (G.CY + p.dy - 18).toFixed(2) + "px)"; // -18 = half the 36px button box
+
+  return (
+    <div
+      className="zone-ring"
+      data-compact={compact ? "true" : "false"}
+      data-dragging={dragging ? "true" : "false"}
+      style={{ "--zr-ms": (settleMs == null ? 300 : settleMs) + "ms" }}
+    >
+      <div className="zr-marker" style={{ top: G.MARKER + "px" }} />
+
+      {[0, 1, 2, 3].map((k) => {
+        // Chevrons sit on the half-slot stops (45/135/225/315deg), on a
+        // tighter ellipse so their hit boxes clear the side labels. An
+        // arrow on the screen-right half steps the right label to front.
+        const p = project(k * 90 + 45 - angle, G.ARX, G.ARY);
+        const screenRight = p.dx > 0;
+        const slotDir = screenRight ? sign : -sign;
+        const targetZid = ZR_ORDER[(frontIdx + slotDir + 4) % 4];
+        return (
+          <button
+            key={"arrow" + k}
+            type="button"
+            className="zr-arrow"
+            aria-label={"عرض " + LOC_ZONES[targetZid].label}
+            style={{ transform: place(p), zIndex: 19 - Math.round(p.depth * 10) }}
+            onClick={() => onPick(targetZid)}
+          >
+            <span
+              style={{
+                transform:
+                  "rotate(" + (screenRight ? 45 : -135) + "deg) " +
+                  "scale(" + (0.55 + 0.45 * p.scale).toFixed(3) + ")",
+                opacity: p.opacity.toFixed(3),
+              }}
+            />
+          </button>
+        );
+      })}
+
+      {ZR_ORDER.map((zid, i) => {
+        const p = project(i * 90 - angle, G.RX, G.RY);
+        const isFront = i === frontIdx;
+        return (
+          <button
+            key={zid}
+            type="button"
+            className="zr-item"
+            data-active={isFront ? "true" : "false"}
+            aria-label={LOC_ZONES[zid].label}
+            aria-current={isFront ? "true" : undefined}
+            style={{ transform: place(p), zIndex: 20 - Math.round(p.depth * 10) }}
+            onClick={() => { if (!isFront) onPick(zid); }}
+          >
+            <span
+              style={{
+                transform: "scale(" + p.scale.toFixed(3) + ")",
+                opacity: p.opacity.toFixed(3),
+              }}
+            >
+              {LOC_ZONES[zid].labelShort}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function CarOrbit({ activeZone, isOpen, onPickZone, onPickHotspot }) {
   const isOrbitZone = LOC_ORBIT_ZONES.includes(activeZone);
 
@@ -11934,8 +12400,8 @@ function CarOrbit({ activeZone, isOpen, onPickZone, onPickHotspot }) {
   // settleMs: how long the snap transition runs — scaled with how far we're snapping
   // so a 15° correction feels instant and a 90° fling takes its time. Hotspots stay
   // hidden for the same duration so they don't fade back in mid-rotation.
-  const [settleMs, setSettleMs] = useState(550);
-  const beginRotation = (ms = 550) => {
+  const [settleMs, setSettleMs] = useState(300);
+  const beginRotation = (ms = 300) => {
     setSettleMs(ms);
     setRotating(true);
     if (settleRef.current) clearTimeout(settleRef.current);
@@ -12063,10 +12529,17 @@ function CarOrbit({ activeZone, isOpen, onPickZone, onPickHotspot }) {
         <div className="turntable-ring inner" />
       </div>
 
-      {/* View label — keyed on visibleZoneId so React remounts it on every face
-          change and the entry animation replays. Engine/interior skip this. */}
+      {/* Zone ring — turntable selector, replaces the keyed .view-label.
+          NO key: the ring must transition, not remount. Follows rot live
+          during drags; settles on the same settleMs the cube gets.
+          Engine/interior still skip it (isOrbitZone). */}
       {isOrbitZone && (
-        <div key={visibleZoneId} className="view-label">{LOC_ZONES[visibleZoneId].label}</div>
+        <ZoneRing
+          angle={rot}
+          dragging={dragging}
+          settleMs={settleMs}
+          onPick={(zid) => { if (zid !== activeZone) onPickZone(zid); }}
+        />
       )}
 
       {isOrbitZone && (
@@ -12111,6 +12584,552 @@ function CarOrbit({ activeZone, isOpen, onPickZone, onPickHotspot }) {
           <span>اسحب للدوران حول السيارة</span>
         </div>
       )}
+    </div>
+  );
+}
+
+/* Preset views for the 3D stage — same four angles as the top-level 3D-model
+   project's prev/next buttons (assets/../index.js PRESET_ANGLES), ported here
+   instead of free-drag orbit. The angle numbers don't line up 1:1 with the 2D
+   cube's rotateY convention, so this is kept as its own explicit map rather
+   than reusing LOC_ZONE_TARGET_ANGLE. Which physical side each angle shows is
+   just a GLB/camera fact — see CAR3D_VIEW_ZONES below for the verified
+   angle-to-zone mapping. */
+/* Radius is tuned per angle — the car's silhouette is narrow front/rear but
+   wide in profile, so a single radius either crops the side view or leaves
+   front/rear tiny. Front/rear zoom in; the two side views zoom back out. */
+const CAR3D_PRESETS = [
+  { orbit: "0deg 80deg", radius: "80%" },    // front
+  { orbit: "90deg 80deg", radius: "110%" },  // a side view
+  { orbit: "180deg 80deg", radius: "80%" },  // rear
+  { orbit: "270deg 80deg", radius: "110%" }, // the other side view
+];
+/* Zone shown at each CAR3D_PRESETS index. Confirmed against the actual GLB
+   render (not assumed from the angle numbers): 90deg renders with the car's
+   front pointing left, matching car-side-clean.png (the LOC_ZONES.sideLeft
+   asset) — NOT car-side-right.png — so it's labeled sideLeft here despite
+   being a "positive" rotation; 270deg is the mirror (front pointing right,
+   matching car-side-right.png / sideRight). Getting this backwards silently
+   draws the sideRight/sideLeft hotspot data (and their fender-l/mirror-r/
+   etc. ids) on the wrong-facing render — same part ends up on the wrong side
+   of the car. */
+const CAR3D_VIEW_ZONES = ["front", "sideLeft", "rear", "sideRight"];
+
+/* 3D stage for the "advanced visual search" screen — same footprint as the 2D
+   orbit-stage, but the car body is the real GLB model instead of the image
+   cube. Free orbit is OFF (no camera-controls) — the only way to change the
+   view is a left/right swipe stepping through CAR3D_PRESETS, same threshold-
+   based gesture as the top-level 3D-model project's index.js (pointerdown →
+   pointerup delta, SWIPE_MIN_DISTANCE gate) rather than a 1:1 drag-follow.
+   Camera orbit is set imperatively via the model-viewer ref (same pattern
+   that project uses), since that's what reliably re-applies the camera
+   position after the initial render.
+
+   Hotspots are the SAME LOC_ZONES data the 2D cube uses (same ids/labels/
+   parts) — CarStage3D keeps its own visible zone as local state (same as
+   CarOrbit's `rot`) and just notifies Locate3DScreen via onPickZone/
+   onPickHotspot, so a swipe here and a drag on the 2D screen update an
+   equivalent state, and a hotspot tap opens the same parts sheet. */
+const CAR3D_SWIPE_MIN_DISTANCE = 40;
+
+/* Pinch-to-zoom. Zoom is applied as FIELD OF VIEW, not camera-orbit radius:
+   each preset carries its own radius (80% front/rear, 110% for the sides), so a
+   radius-based zoom would mean a different magnification per side, while
+   narrowing the FOV magnifies by the same factor from any angle.
+
+   Magnification m maps to fov = 2*atan(tan(baseFov/2) / m). Verified on the real
+   GLB: base 30deg, m=1.5 -> 20.2576deg, and the rendered hotspot offsets from
+   centre scaled by exactly 1.500. Zoom is capped at 1.5 and floored at 1 — this
+   is a zoom-IN affordance only, never out past the framed default.
+
+   This only works because the hotspots are native model-viewer hotspots now:
+   they're projected from 3D anchors every frame, so they ride the zoom for free.
+   The old percentage-positioned dots would have slid off the car instantly. */
+const CAR3D_ZOOM_MAX = 1.5;
+// Finger separation must change by this much before a two-finger touch counts as
+// a pinch, so a sloppy two-finger tap doesn't nudge the zoom.
+const CAR3D_PINCH_MIN_DISTANCE = 12;
+/* Delay before the camera is reset to the front preset on CLOSE. Sits just past
+   the 0.34s .locate-screen slide-out, by which point the screen is
+   visibility:hidden — so the reset is invisible rather than snapping the car
+   around in full view while it slides away. */
+const CAR3D_EXIT_RESET_MS = 360;
+
+const CAR3D_FOV_FALLBACK_DEG = 30; // model-viewer's default for this model, measured
+/* model-viewer hands back positions as a Vector3D whose toString is "Xm Ym Zm".
+   parseFloat stops at the unit suffix, so this works on both that and on the
+   plain "X Y Z" strings in CAR3D_HOTSPOT_3D. */
+const car3dParseVec = (v) => String(v).trim().split(/\s+/).map((n) => parseFloat(n));
+const car3dLerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+const car3dFovForZoom = (baseFovDeg, zoom) => {
+  const baseRad = (baseFovDeg * Math.PI) / 180;
+  return (2 * Math.atan(Math.tan(baseRad / 2) / zoom) * 180) / Math.PI;
+};
+// Same 300ms CarOrbit's beginRotation() defaults to for a zone change that
+// isn't a live drag-follow, so the two screens hide/reveal hotspots on the
+// same cadence. See settleRotation in CarStage3D for how this is made
+// authoritative (jumpCameraToGoal) rather than a guess.
+const CAR3D_ROTATION_SETTLE_MS = 300;
+
+/* 3D anchor points for the native <model-viewer> hotspots — metres, model
+   space, keyed zone → hotspot id. These replace the old CAR3D_HOTSPOT_POS
+   table of 2D percentages, which only worked because the stage was locked to a
+   square and had to be re-tuned by hand against screenshots whenever the camera
+   framing moved. A point ON THE MODEL needs none of that: model-viewer projects
+   it every frame, so the dots follow the car at any camera angle, stage size or
+   aspect ratio.
+
+   NOT re-authored by eye. Each value was produced by raycasting
+   positionAndNormalFromPoint() through the exact pixel where that dot already
+   sat, so the on-screen placement is preserved by construction — all 18
+   converted, none missed. (That call takes VIEWPORT coordinates, not
+   element-relative ones; passing element-relative offsets silently misses.)
+
+   brake-pad-f / brake-pad-r deliberately carry different anchors on each side:
+   the originals were nudged per side because the render isn't perfectly
+   mirror-symmetric between the two side presets, and keeping both preserves the
+   current look exactly.
+
+   `normal` is the surface orientation at each point. It is kept for future use
+   (model-viewer can hide hotspots that face away from the camera) but is NOT
+   acted on today — see --min-hotspot-opacity in the .car-stage-3d CSS. Some
+   normals point into the body where the ray caught a back face; bumper-f's
+   "0 0 -1" is the clearest example, and honouring it would fade that dot to 25%. */
+const CAR3D_HOTSPOT_3D = {
+  front: {
+    "hood":        { position: "0.0001 0.9455 1.7619",   normal: "0.0009 0.9872 0.1592" },
+    "grille":      { position: "0.0001 0.6909 2.4196",   normal: "-0.2290 0 0.9734" },
+    "bumper-f":    { position: "0.0001 0.4270 2.4385",   normal: "0 0 -1" },
+    "headlight-r": { position: "-0.7674 0.7823 2.0496",  normal: "-0.0604 0.9690 0.2394" },
+    "fog-r":       { position: "-0.7532 0.4502 2.2154",  normal: "0.5976 -0.2754 0.7530" },
+  },
+  sideLeft: {
+    "mirror-l":    { position: "0.9961 0.9898 0.7657",   normal: "0.4611 -0.5965 0.6570" },
+    "door-fl":     { position: "0.9009 0.7926 0.1109",   normal: "0.9966 0.0821 -0.0029" },
+    "fender-l":    { position: "0.8902 0.8261 1.4672",   normal: "0.8012 0.5976 0.0313" },
+    "brake-pad-r": { position: "0.8996 0.4569 -1.1880",  normal: "0.9977 -0.0664 -0.0165" },
+    "brake-pad-f": { position: "0.8993 0.4568 1.3110",   normal: "0.9984 -0.0266 0.0505" },
+  },
+  rear: {
+    "marker-l":    { position: "0.6122 0.9053 -2.2992",  normal: "0.3795 0.0844 -0.9213" },
+    "bumper-r":    { position: "-0.0028 0.5732 -2.4336", normal: "-0.0147 -0.0210 -0.9997" },
+    "marker-r":    { position: "-0.6120 0.9053 -2.2992", normal: "-0.3795 0.0844 -0.9213" },
+  },
+  sideRight: {
+    "mirror-r":    { position: "-0.8918 0.9170 0.7601",  normal: "-0.8609 -0.4810 0.1658" },
+    "door-fr":     { position: "-0.9007 0.7926 0.0858",  normal: "-0.9966 0.0821 -0.0029" },
+    "fender-r":    { position: "-0.8902 0.8261 1.4670",  normal: "-0.8066 0.5904 0.0278" },
+    "brake-pad-r": { position: "-0.7786 0.4297 -1.2546", normal: "-1 0 0" },
+    "brake-pad-f": { position: "-0.8944 0.4557 1.5115",  normal: "-0.9873 -0.0561 -0.1486" },
+  },
+};
+
+/* viewIndex/rotating/dragging are all LOCAL state here, exactly like CarOrbit
+   keeps `rot` local — NOT derived from the activeZone prop. Driving the camera
+   swap and the rotating/dragging hide-state from the same synchronous handler
+   as the swipe release (see step()) is what keeps this in sync with CarOrbit's
+   timing. The previous version derived viewIndex FROM the activeZone prop and
+   only flipped `rotating` in a useEffect keyed on it — that meant the hide
+   state depended on a parent round-trip (onPickZone → Locate3DScreen's
+   setActiveZone → re-render → new prop → effect), landing a render or two
+   after `dragging` had already flipped back to false on pointerup. That gap
+   let the hotspots flash back into view for a moment before re-hiding for the
+   rotation, instead of a single clean hide → reveal like CarOrbit. onPickZone
+   is still called, purely to notify the parent for the parts sheet/zone label
+   in the header — it doesn't gate anything here. */
+function CarStage3D({ isOpen, onPickZone, onPickHotspot }) {
+  const viewerRef = useRef(null);
+  const [viewIndex, setViewIndex] = useState(0);
+  const [rotating, setRotating] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [modelLoaded, setModelLoaded] = useState(false);
+  const rotateRef = useRef(null);
+
+  // Continuous ring angle: viewIndex only says WHERE (0/90/180/270); this
+  // accumulates the short-arc signed delta so the ring never spins the
+  // long way across the 270→0 wrap (same trick as CarOrbit's rot). Because
+  // it keys off viewIndex, swipes (step), ring taps (goTo) AND the
+  // close-reset effect's setViewIndex(0) all flow through here.
+  const [ringAngle, setRingAngle] = useState(0);
+  useEffect(() => {
+    const target = viewIndex * 90;
+    setRingAngle((prev) => {
+      const current = ((prev % 360) + 360) % 360;
+      let delta = target - current;
+      if (delta > 180) delta -= 360;
+      if (delta < -180) delta += 360;
+      return prev + delta;
+    });
+  }, [viewIndex]);
+
+  /* Zoom state lives in refs, not useState: the pointer handlers below run on
+     every move and must read the CURRENT zoom without the handler identity
+     changing on each render. Nothing here needs to trigger a re-render — the
+     zoom is expressed purely as a camera property on model-viewer. */
+  const zoomRef = useRef(1);        // current magnification, 1 .. CAR3D_ZOOM_MAX
+  const baseFovRef = useRef(CAR3D_FOV_FALLBACK_DEG);
+  const pointersRef = useRef(new Map()); // live pointerId -> {x, y}
+  const baseTargetRef = useRef(null); // default camera-target = zoom-out anchor
+  const pinchRef = useRef(null);    // {startDist, startZoom, anchor} while pinching
+  const pinchedRef = useRef(false); // a pinch happened in this gesture
+
+  // model-viewer fires "load" once the GLB is parsed and first rendered. Check
+  // .loaded first: with loading="eager" the model can already be ready before
+  // this effect runs, and the event would never fire again.
+  useEffect(() => {
+    const mv = viewerRef.current;
+    if (!mv) return;
+    // Capture the framed field of view as the 100% reference. Read from the
+    // element rather than hardcoding 30deg, so "100%" keeps meaning "as framed"
+    // if the model or its framing ever changes.
+    const captureBaseFov = () => {
+      if (mv.getFieldOfView) baseFovRef.current = mv.getFieldOfView();
+      // The framed target is what zoom pulls AWAY from when it returns to 100%.
+      if (mv.getCameraTarget) baseTargetRef.current = car3dParseVec(mv.getCameraTarget());
+    };
+    if (mv.loaded) { captureBaseFov(); setModelLoaded(true); return; }
+    const onLoad = () => { captureBaseFov(); setModelLoaded(true); };
+    mv.addEventListener("load", onLoad);
+    return () => mv.removeEventListener("load", onLoad);
+  }, []);
+
+  /* snap=true drives the camera straight to the new FOV (used while a pinch is
+     tracking fingers, so it feels 1:1 instead of lagging behind); snap=false
+     lets model-viewer ease, which is what makes the swipe-to-cancel glide back
+     out rather than jump. */
+  /* Narrowing the field of view alone magnifies about the CENTRE of the frame,
+     so a pinch on the rear bumper would still zoom into the middle of the car.
+     To zoom where the fingers are, the camera's orbit target is walked from its
+     framed default toward the 3D point under the pinch (captured once at pinch
+     start, see onPointerDown), in step with the zoom: t=0 at 100% leaves the
+     target exactly where it was, t=1 at CAR3D_ZOOM_MAX centres the pinched
+     point. Because the ramp is tied to the zoom level, releasing the zoom walks
+     the target back on its own — no separate unwind to keep in sync.
+
+     Verified on the real GLB: targeting the headlight anchor puts that hotspot
+     at (206,333), the exact stage centre, and leaves the orbit radius untouched
+     so there is no surprise dolly.
+
+     snap=true drives the camera straight there (used while a pinch tracks the
+     fingers, so it feels 1:1 instead of lagging); snap=false lets model-viewer
+     ease, which is what makes swipe-to-cancel glide back out rather than jump. */
+  const applyZoom = (zoom, snap, anchor) => {
+    const mv = viewerRef.current;
+    zoomRef.current = zoom;
+    if (!mv) return;
+    mv.fieldOfView = car3dFovForZoom(baseFovRef.current, zoom) + "deg";
+    const base = baseTargetRef.current;
+    if (base) {
+      const span = CAR3D_ZOOM_MAX - 1;
+      const t = span > 0 ? Math.min(1, Math.max(0, (zoom - 1) / span)) : 0;
+      const to = anchor && t > 0 ? car3dLerp(base, anchor, t) : base;
+      mv.cameraTarget = to[0] + "m " + to[1] + "m " + to[2] + "m";
+    }
+    if (snap && mv.jumpCameraToGoal) mv.jumpCameraToGoal();
+  };
+  // Back to 100%, which also walks the target home (t hits 0 above).
+  const resetZoom = (snap) => { if (zoomRef.current !== 1) applyZoom(1, snap, null); };
+
+  const applyCamera = (idx) => {
+    const p = CAR3D_PRESETS[idx];
+    if (viewerRef.current) viewerRef.current.cameraOrbit = p.orbit + " " + p.radius;
+  };
+
+  /* CarOrbit's cube rotation is a CSS transition — its declared duration IS
+     the real animation length, so a setTimeout of that same length is
+     guaranteed to fire exactly when the cube stops moving. model-viewer's
+     camera-orbit change has no such guarantee: it eases in on its own
+     internal decay, not a fixed-duration transition — a flat setTimeout next
+     to it is just a guess, not something driving it, so it could reveal
+     hotspots before the model has actually stopped turning ("too fast").
+     There's also no reliable way to POLL for "has it actually finished" —
+     model-viewer's getCameraOrbit() reports the target the instant you set
+     it, not the live mid-ease position (confirmed: diff-from-target reads 0
+     on the very next frame), so it can't tell us when the easing is really
+     done. Fixed by forcing the issue instead of guessing: let it ease for
+     CAR3D_ROTATION_SETTLE_MS, then call jumpCameraToGoal() to force-snap the
+     camera to its final pose before revealing hotspots. That makes the timer
+     authoritative again — the camera is GUARANTEED to be at rest the instant
+     hotspots reappear, the same guarantee CSS's transition duration gives
+     CarOrbit, just enforced explicitly instead of assumed. */
+  const settleRotation = () => {
+    setRotating(true);
+    if (rotateRef.current) clearTimeout(rotateRef.current);
+    rotateRef.current = setTimeout(() => {
+      if (viewerRef.current && viewerRef.current.jumpCameraToGoal) viewerRef.current.jumpCameraToGoal();
+      setRotating(false);
+    }, CAR3D_ROTATION_SETTLE_MS);
+  };
+
+  /* Reset to the front preset on CLOSE, not on open. This used to run on open,
+     and applyCamera() only sets a camera-orbit TARGET that model-viewer eases
+     toward — so leaving the car on its rear side and reopening played a visible
+     spin back to the front. Doing it on close, and forcing it with
+     jumpCameraToGoal() instead of easing (the same trick settleRotation uses),
+     means the screen is already facing front the instant it reopens.
+
+     The delay lets the slide-out finish first (see CAR3D_EXIT_RESET_MS) so the
+     snap happens behind a hidden screen. Zoom is reset here too, so reopening
+     never inherits a zoomed camera. */
+  useEffect(() => {
+    if (isOpen) return;
+    if (rotateRef.current) clearTimeout(rotateRef.current);
+    const id = setTimeout(() => {
+      setRotating(false);
+      setViewIndex(0);
+      resetZoom(true);
+      applyCamera(0);
+      const mv = viewerRef.current;
+      if (mv && mv.jumpCameraToGoal) mv.jumpCameraToGoal();
+    }, CAR3D_EXIT_RESET_MS);
+    return () => clearTimeout(id);
+  }, [isOpen]);
+
+  const visibleZone = CAR3D_VIEW_ZONES[viewIndex];
+
+  /* goTo — step() generalized to an absolute index; ring taps land here.
+     settleRotation()'s 300ms jumpCameraToGoal snap guarantees any jump
+     (90° or 180°) lands exactly when the ring's 300ms transition ends. */
+  const goTo = (targetIndex) => {
+    if (targetIndex < 0 || targetIndex === viewIndex) return;
+    setViewIndex(targetIndex);
+    applyCamera(targetIndex);
+    settleRotation();
+    onPickZone(CAR3D_VIEW_ZONES[targetIndex]);
+  };
+  const step = (delta) =>
+    goTo((viewIndex + delta + CAR3D_PRESETS.length) % CAR3D_PRESETS.length);
+
+  // dragging hides hotspots the instant the finger touches down, same as
+  // CarOrbit's onPointerDown — so the fade-out starts with the gesture
+  // instead of only after the swipe is measured on release.
+  const swipeRef = useRef(null);
+
+  const pointerDistance = () => {
+    const pts = [...pointersRef.current.values()];
+    if (pts.length < 2) return 0;
+    return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+  };
+  const pointerMidpoint = () => {
+    const pts = [...pointersRef.current.values()];
+    if (pts.length < 2) return null;
+    return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+  };
+  /* The 3D point on the car under the pinch, which the zoom will home in on.
+     positionAndNormalFromPoint takes VIEWPORT coordinates (not element-relative
+     ones — passing element offsets silently misses). Returns null when the
+     fingers straddle empty background, in which case the caller falls back to
+     plain centre zoom. */
+  const anchorFromPoint = (pt) => {
+    const mv = viewerRef.current;
+    if (!mv || !pt || !mv.positionAndNormalFromPoint) return null;
+    const hit = mv.positionAndNormalFromPoint(pt.x, pt.y);
+    return hit ? car3dParseVec(hit.position) : null;
+  };
+
+  /* The swipe zone (.car-drag-3d) is a centred column, not the whole stage —
+     see its CSS for why. The handlers stay on .car-stage-3d rather than moving
+     onto that column, because they need events from the ENTIRE subtree: a
+     pointerdown on a hotspot dot targets the dot (hotspots re-enable
+     pointer-events inside model-viewer) and bubbles up through model-viewer,
+     so a sibling column never sees it and a drag begun on a dot would stop
+     rotating the car. Keeping them here also guarantees pointersRef sees the
+     pointerup for every pointerdown it recorded — miss one and the stale entry
+     makes the next gesture read as a second finger, i.e. a pinch, silently
+     killing every later swipe.
+     So the column is consulted for GEOMETRY only, and only to decide where a
+     swipe may BEGIN. Reading its rect keeps the CSS the single source of truth
+     for the zone's size. */
+  const dragZoneRef = useRef(null);
+  const inDragZone = (e) => {
+    const el = dragZoneRef.current;
+    if (!el) return true; // not mounted yet — never trap the gesture
+    const r = el.getBoundingClientRect();
+    return e.clientX >= r.left && e.clientX <= r.right
+        && e.clientY >= r.top && e.clientY <= r.bottom;
+  };
+
+  const onPointerDown = (e) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) {
+      // Second finger down: this gesture is a pinch, never a swipe.
+      /* Anchor is captured ONCE, here, not re-read on every move: the midpoint
+         between two fingers drifts constantly during a pinch, and re-anchoring
+         each frame would make the car slide around under them. */
+      pinchRef.current = {
+        startDist: pointerDistance(),
+        startZoom: zoomRef.current,
+        anchor: anchorFromPoint(pointerMidpoint()),
+      };
+      pinchedRef.current = true;
+      swipeRef.current = null;
+      // Hotspots stay visible while zooming — they're projected from the model,
+      // so they track the zoom, and inspecting them is the point of zooming.
+      setDragging(false);
+      return;
+    }
+    /* Outside the swipe column: the pointer is still RECORDED above (dropping
+       it would desync pointersRef), it just doesn't arm a swipe. Leaves the
+       screen edges to the system back-swipe, matching .car-drag on the 2D
+       screen. Pinch is deliberately not gated — it is handled in the branch
+       above and zooming the model is worth allowing from anywhere. */
+    if (!inDragZone(e)) { swipeRef.current = null; return; }
+    swipeRef.current = { x: e.clientX, y: e.clientY };
+    setDragging(true);
+  };
+
+  const onPointerMove = (e) => {
+    if (!pointersRef.current.has(e.pointerId)) return;
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pinch = pinchRef.current;
+    if (!pinch || pointersRef.current.size < 2) return;
+    const dist = pointerDistance();
+    if (!dist || Math.abs(dist - pinch.startDist) < CAR3D_PINCH_MIN_DISTANCE) return;
+    // Clamped to [1, CAR3D_ZOOM_MAX]: the floor is what makes this zoom-in only.
+    const next = Math.min(CAR3D_ZOOM_MAX, Math.max(1, pinch.startZoom * (dist / pinch.startDist)));
+    applyZoom(next, true, pinch.anchor); // snap, so the zoom tracks the fingers 1:1
+  };
+
+  const endPointer = (e) => {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    // Only once EVERY finger is up is the gesture really over. Clearing this on
+    // the first lift would let the second finger coming off read as a swipe.
+    if (pointersRef.current.size === 0) {
+      const wasPinch = pinchedRef.current;
+      pinchedRef.current = false;
+      return wasPinch;
+    }
+    return true; // fingers still down — treat as mid-gesture, not a swipe
+  };
+
+  const onPointerUp = (e) => {
+    const suppress = endPointer(e);
+    setDragging(false);
+    if (!swipeRef.current) return;
+    const dx = e.clientX - swipeRef.current.x;
+    const dy = e.clientY - swipeRef.current.y;
+    swipeRef.current = null;
+    if (suppress) return; // this gesture was (part of) a pinch
+    if (zoomRef.current > 1) {
+      /* Zoomed in: a swipe in ANY direction just zooms back out and hands normal
+         swipe-to-rotate back. It deliberately does NOT also step the view — the
+         user stays on the side they were inspecting, and the next swipe rotates.
+         Hence max(|dx|,|dy|) here rather than the horizontal-dominance test. */
+      if (Math.max(Math.abs(dx), Math.abs(dy)) > CAR3D_SWIPE_MIN_DISTANCE) resetZoom(false);
+      return;
+    }
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > CAR3D_SWIPE_MIN_DISTANCE) {
+      step(dx < 0 ? 1 : -1); // swipe left -> next, swipe right -> prev
+    }
+  };
+
+  const onPointerCancel = (e) => { endPointer(e); swipeRef.current = null; setDragging(false); };
+
+  /* Native model-viewer hotspot: a slotted child of <model-viewer> carrying a
+     3D anchor, rather than an HTML dot positioned by percentage over the canvas.
+     model-viewer projects data-position every frame, so these track the car by
+     themselves instead of needing a per-zone percentage table.
+
+     The slot name is zone-qualified because it's the identity model-viewer keys
+     each hotspot by, and brake-pad-f / brake-pad-r appear in BOTH side zones with
+     different anchors — a bare id would collide and one side would render at the
+     other's point. The React key matches for the same reason. */
+  const renderHotspot = (h) => {
+    const anchor = CAR3D_HOTSPOT_3D[visibleZone] && CAR3D_HOTSPOT_3D[visibleZone][h.id];
+    if (!anchor) return null;
+    const slotId = visibleZone + "-" + h.id;
+    return (
+      <button
+        key={slotId}
+        slot={"hotspot-" + slotId}
+        data-position={anchor.position}
+        data-normal={anchor.normal}
+        className="hotspot hotspot-3d"
+        onClick={(e) => {
+          e.stopPropagation();
+          // A pinch that happens to start on a dot must not open the parts
+          // sheet when the fingers lift.
+          if (pinchedRef.current || pinchRef.current) return;
+          onPickHotspot(visibleZone, h.id);
+        }}
+        aria-label={h.label}
+      >
+        <span className="hotspot-pulse" />
+        <span className="hotspot-dot" />
+        <span className="hotspot-label">{h.label}</span>
+      </button>
+    );
+  };
+
+  return (
+    <div className="orbit-stage">
+      {/* Zone ring — stays a SIBLING of .car-stage-3d (the old .view-label
+          slot): its taps live outside the stage's pointer-handler subtree,
+          so pointersRef can never desync and hotspots never blink — no
+          stopPropagation needed. Local viewIndex stays the source of truth;
+          goTo already ends with onPickZone so the parent sheet follows the
+          same path a swipe uses. No isOrbitZone guard: this screen only has
+          the four orbit zones. */}
+      <ZoneRing
+        angle={ringAngle}
+        dragging={false}
+        settleMs={CAR3D_ROTATION_SETTLE_MS}
+        onPick={(zid) => goTo(CAR3D_VIEW_ZONES.indexOf(zid))}
+      />
+      {/* The hide flag moved here from .hotspots-overlay — the hotspots are
+          slotted inside <model-viewer> now, so there's no overlay wrapper left
+          to fade. Same inputs, same 0.15s fade, just driven from the stage. */}
+      <div
+        className="car-stage-3d"
+        data-hotspots-hidden={rotating || dragging || !modelLoaded}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+      >
+        {/* The swipe zone: same centred 300px column the 2D screen uses
+            (.car-drag), rather than the full-bleed stage. It carries no
+            handlers — those stay on .car-stage-3d so they keep receiving the
+            whole subtree's events (see inDragZone). This element exists to own
+            `touch-action: none` over just the column, and to be the rect
+            onPointerDown measures against. */}
+        <div className="car-drag-3d" ref={dragZoneRef} />
+        <model-viewer
+          ref={viewerRef}
+          src="assests/car.glb?v=3"
+          /* eager, not the default "auto". "auto" is lazy: it waits until the
+             element is near the viewport, and this screen is parked one
+             viewport below, so the 4MB GLB didn't even start downloading until
+             the user tapped — the whole wait happened AFTER the tap, in front
+             of them. Eager starts it as the element mounts, so the download
+             overlaps with the user reading the home screen instead. */
+          loading="eager"
+          alt="نموذج ثلاثي الأبعاد للسيارة"
+          camera-orbit={CAR3D_PRESETS[0].orbit + " " + CAR3D_PRESETS[0].radius}
+          shadow-intensity="1"
+          shadow-softness="0.75"
+          exposure="0.9"
+        >
+          {/* Replaces model-viewer's built-in progress bar (part=
+              "default-progress-bar") — a 5px gray bar pinned across the top of
+              the model box that reads as a stray horizontal scrollbar and
+              collides with the zone title above it. Slotting an empty div is
+              the documented way to drop it. */}
+          <div slot="progress-bar"></div>
+          {/* Native hotspots live INSIDE model-viewer — that's what lets it
+              project them onto the model. Only the current zone's are rendered,
+              same as before; the model has anchors for every zone, but showing
+              them all at once would put side-zone dots on the front view. */}
+          {LOC_ZONES[visibleZone].hotspots.map((h) => renderHotspot(h))}
+        </model-viewer>
+      </div>
+      <div className="drag-hint">
+        <svg width="18" height="12" viewBox="0 0 20 14" fill="none">
+          <path d="M2 7 L6 3 M2 7 L6 11 M2 7 L18 7 M18 7 L14 3 M18 7 L14 11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        </svg>
+        <span>اسحب للدوران حول السيارة</span>
+      </div>
     </div>
   );
 }
@@ -12252,7 +13271,9 @@ function PartsSheet({ zone, mode, onToggle, cat, setCat, onAddPart, addedIds, ac
               added={addedIds && addedIds.has(p.id)}
               highlight={isTapped}
               onAddToCart={onAddPart ? () => onAddPart(p) : undefined}
-              onClick={() => navigate("/p/" + locPartToRow(p).key)}
+              /* No PDP route in this standalone build — a navigate() here would
+                 push a hash entry that renders nothing and silently swallows
+                 the user's next back press. */
             />
           );
         })}
@@ -12260,6 +13281,58 @@ function PartsSheet({ zone, mode, onToggle, cat, setCat, onAddPart, addedIds, ac
     </div>
     </>
   );
+}
+
+/* ---------------------------------------------------------------------------
+   Parts-sheet back level
+   ---------------------------------------------------------------------------
+   As far as the user is concerned the expanded sheet IS the screen they are
+   on — it covers the car and it's what they're reading. So on Android the
+   hardware back button has to collapse it back to peek, not close the whole
+   visual-search screen. It only can if expanding pushed a history entry of
+   its own: without one the single entry on the stack is the screen's, back
+   popped that, and the user got thrown all the way out to the home card with
+   the parts list still in front of them.
+
+   Expanding pushes a nested entry (same `vss`, depth + 1). Collapsing — by
+   chevron, scrim tap, drag-down, or a physical back press — always resolves
+   through history.back(), so every route to "collapsed" leaves the stack in
+   the same shape and the two can't drift apart. App.closeScreen() reads
+   `depth` to unwind both levels in one go when the screen itself is dismissed.
+   --------------------------------------------------------------------------- */
+function useSheetBackLevel(isOpen, setSheetMode) {
+  const pushedRef = useRef(false);
+
+  useEffect(() => {
+    // Landing on any entry that isn't our sheet entry means the sheet level is
+    // gone (back press, or the screen being dismissed over it) → collapse.
+    const onPop = () => {
+      if (window.history.state && window.history.state.sheet) return;
+      pushedRef.current = false;
+      setSheetMode("peek");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [setSheetMode]);
+
+  // Screen closed by any path → its entries (ours included) are off the stack.
+  useEffect(() => { if (!isOpen) pushedRef.current = false; }, [isOpen]);
+
+  const expandSheet = () => {
+    const st = window.history.state;
+    if (!pushedRef.current && st && st.vss) {
+      window.history.pushState({ vss: st.vss, sheet: true, depth: (st.depth || 1) + 1 }, "");
+      pushedRef.current = true;
+    }
+    setSheetMode("open");
+  };
+  const collapseSheet = () => {
+    // popstate (above) is what actually flips the mode back to peek.
+    if (pushedRef.current) window.history.back();
+    else setSheetMode("peek");
+  };
+
+  return { expandSheet, collapseSheet };
 }
 
 function LocateScreen({ isOpen, onClose, onCart, cartCount = 0, drawerOpen = false, cart = [], onAddToCart, onRemoveFromCart }) {
@@ -12274,6 +13347,8 @@ function LocateScreen({ isOpen, onClose, onCart, cartCount = 0, drawerOpen = fal
   const [activePartId, setActivePartId] = useState(null);
   const [tapNonce, setTapNonce] = useState(0);
   const zone = LOC_ZONES[activeZone];
+  // Expanding the sheet is its own back level — see useSheetBackLevel.
+  const { expandSheet, collapseSheet } = useSheetBackLevel(isOpen, setSheetMode);
 
   // Every open lands on the front zone. The screen is always mounted, so without
   // this the last zone would persist. CarOrbit snaps to the front face on open
@@ -12313,7 +13388,7 @@ function LocateScreen({ isOpen, onClose, onCart, cartCount = 0, drawerOpen = fal
     setCat(part ? partChipLabel(part) : "الكل");
     setActivePartId(part ? part.id : null);
     setTapNonce((n) => n + 1);
-    setSheetMode("open");
+    expandSheet();
   };
   /* Toggle semantics: tap adds the canonical key to cart; tap again on
      an item already in cart removes it entirely (hard delete, no qty
@@ -12335,14 +13410,15 @@ function LocateScreen({ isOpen, onClose, onCart, cartCount = 0, drawerOpen = fal
   // Drag-to-close from the header. Two states: `dragging` (finger down,
   // 1:1 follow with transition:none) and the release animation phase
   // (transition restored so the slide back / slide down animates
-  // smoothly). Cart button is excluded so its tap stays sensitive.
+  // smoothly). Cart + close buttons are excluded so their taps stay
+  // sensitive (a captured pointer on this div otherwise swallows their click).
   const [dragY, setDragY] = useState(0);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef(null);
   const CLOSE_THRESHOLD = 0.28; // fraction of viewport height
   const CLOSE_ANIM_MS = 300;
   const onHeaderPointerDown = (e) => {
-    if (e.target.closest && e.target.closest(".loc-cart")) return;
+    if (e.target.closest && e.target.closest(".loc-cart, .loc-back")) return;
     dragRef.current = { startY: e.clientY };
     setDragging(true);
     if (e.currentTarget.setPointerCapture) {
@@ -12418,7 +13494,7 @@ function LocateScreen({ isOpen, onClose, onCart, cartCount = 0, drawerOpen = fal
       </div>
 
       <div className="loc-head">
-        <p className="loc-hint">اضغط على أي منطقة لعرض قطعها</p>
+        <p className="loc-hint">اضغط على النقاط التفاعليه لعرض القطع</p>
       </div>
 
       <CarOrbit
@@ -12437,7 +13513,162 @@ function LocateScreen({ isOpen, onClose, onCart, cartCount = 0, drawerOpen = fal
         addedIds={addedIds}
         activePartId={activePartId}
         tapNonce={tapNonce}
-        onToggle={() => setSheetMode(sheetMode === "peek" ? "open" : "peek")}
+        onToggle={() => (sheetMode === "open" ? collapseSheet() : expandSheet())}
+      />
+    </div>
+  );
+}
+
+/* ============================================================================
+   Advanced Visual Search (3D) — #/locate-3d
+   ----------------------------------------------------------------------------
+   Same shell as LocateScreen (header, hint, bottom parts sheet) and the same
+   zone/hotspot/parts-sheet wiring, but the car body is the real 3D model
+   (CarStage3D) instead of the image cube — swiping left/right steps through
+   CAR3D_VIEW_ZONES instead of dragging the cube. Tapping a hotspot opens the
+   parts sheet exactly like LocateScreen's onPickHotspot.
+   ============================================================================ */
+function Locate3DScreen({ isOpen, onClose, onCart, cartCount = 0, drawerOpen = false, cart = [], onAddToCart, onRemoveFromCart }) {
+  const [activeZone, setActiveZone] = useState("front");
+  const [sheetMode, setSheetMode] = useState("peek");
+  const [cat, setCat] = useState("الكل");
+  const [activePartId, setActivePartId] = useState(null);
+  const [tapNonce, setTapNonce] = useState(0);
+  const zone = LOC_ZONES[activeZone];
+  // Expanding the sheet is its own back level — see useSheetBackLevel.
+  const { expandSheet, collapseSheet } = useSheetBackLevel(isOpen, setSheetMode);
+
+  // Every open lands on the front zone, same as LocateScreen — the screen is
+  // always mounted, so without this the last zone/filter would persist.
+  useEffect(() => {
+    if (!isOpen) return;
+    setActiveZone("front");
+    setCat("الكل");
+    setActivePartId(null);
+    setSheetMode("peek");
+  }, [isOpen]);
+
+  const addedIds = useMemo(() => {
+    const ids = new Set();
+    const liveCartKeys = new Set(cart.filter((it) => !it.pending).map((it) => it.key));
+    for (const zid of LOC_ORBIT_ZONES) {
+      for (const p of LOC_ZONES[zid].parts) {
+        if (liveCartKeys.has(resolveLocPartKey(p))) ids.add(p.id);
+      }
+    }
+    return ids;
+  }, [cart]);
+
+  // Swiping to a new face resets the filter AND the lead part, same as the
+  // 2D screen's onZoneChange — a stale highlight from another zone would
+  // point at a row that isn't here.
+  const onZoneChange = (zid) => { setActiveZone(zid); setCat("الكل"); setActivePartId(null); };
+  const onPickHotspot = (zoneId, hotspotId) => {
+    const part = LOC_ZONES[zoneId].parts.find((p) => p.id === hotspotId);
+    setActiveZone(zoneId);
+    setCat(part ? partChipLabel(part) : "الكل");
+    setActivePartId(part ? part.id : null);
+    setTapNonce((n) => n + 1);
+    expandSheet();
+  };
+
+  const onAddPart = (p) => {
+    const key = resolveLocPartKey(p);
+    const liveItem = cart.find((it) => it.key === key && !it.pending);
+    if (liveItem) {
+      if (onRemoveFromCart) onRemoveFromCart(key);
+    } else if (onAddToCart) {
+      onAddToCart(key);
+    }
+  };
+
+  // Same drag-to-close header behavior as LocateScreen.
+  const [dragY, setDragY] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef(null);
+  const CLOSE_THRESHOLD = 0.28;
+  const CLOSE_ANIM_MS = 300;
+  const onHeaderPointerDown = (e) => {
+    if (e.target.closest && e.target.closest(".loc-cart, .loc-back")) return;
+    dragRef.current = { startY: e.clientY };
+    setDragging(true);
+    if (e.currentTarget.setPointerCapture) {
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+  };
+  const onHeaderPointerMove = (e) => {
+    if (!dragRef.current) return;
+    const dy = Math.max(0, e.clientY - dragRef.current.startY);
+    setDragY(dy);
+  };
+  const onHeaderPointerUp = () => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    setDragging(false);
+    const threshold = window.innerHeight * CLOSE_THRESHOLD;
+    if (dragY > threshold) {
+      setDragY(window.innerHeight);
+      setTimeout(() => {
+        setDragY(0);
+        onClose();
+      }, CLOSE_ANIM_MS);
+    } else {
+      setDragY(0);
+    }
+  };
+  const screenStyle = (() => {
+    if (dragging) return { transform: "translateY(" + dragY + "px)", transition: "none" };
+    if (dragY > 0) return { transform: "translateY(" + dragY + "px)", transition: "transform " + CLOSE_ANIM_MS + "ms cubic-bezier(.22, 1, .36, 1)" };
+    return undefined;
+  })();
+
+  return (
+    <div
+      className={"locate-screen" + (isOpen ? " is-open" : "")}
+      aria-hidden={!isOpen}
+      style={screenStyle}
+    >
+      <div
+        className="car-bar loc-carbar"
+        onPointerDown={onHeaderPointerDown}
+        onPointerMove={onHeaderPointerMove}
+        onPointerUp={onHeaderPointerUp}
+        onPointerCancel={onHeaderPointerUp}
+      >
+        <button
+          className={"loc-back" + (drawerOpen ? " is-hidden" : "")}
+          onClick={onClose}
+          aria-label="إغلاق"
+        ><IconClose /></button>
+        <div className="car-bar-body">
+          <div className="car-bar-name">{CURRENT_CAR.name}</div>
+        </div>
+        <button className="loc-cart" onClick={onCart} aria-label="السلة">
+          <IconCart />
+          {cartCount > 0 && <span className="loc-cart-badge">{cartCount}</span>}
+        </button>
+      </div>
+
+      <div className="loc-head">
+        <p className="loc-hint">اضغط على النقاط التفاعليه لعرض القطع</p>
+      </div>
+
+      <CarStage3D
+        isOpen={isOpen}
+        onPickZone={onZoneChange}
+        onPickHotspot={onPickHotspot}
+      />
+
+      <PartsSheet
+        zone={zone}
+        mode={sheetMode}
+        cat={cat}
+        setCat={setCat}
+        onAddPart={onAddPart}
+        addedIds={addedIds}
+        activePartId={activePartId}
+        tapNonce={tapNonce}
+        onToggle={() => (sheetMode === "open" ? collapseSheet() : expandSheet())}
       />
     </div>
   );
@@ -16413,8 +17644,8 @@ function DiscoverScreen({ urlParams, onSearch }) {
    ride (harmless at module scope).
    ============================================================================ */
 
-/* Minimal Home: one centered card that opens Visual Search. */
-function VssHome({ onOpen }) {
+/* Minimal Home: cards that open Visual Search (2D) and Advanced Visual Search (3D). */
+function VssHome({ onOpen, onOpen3D }) {
   return (
     <div className="vss-home">
       <img className="vss-home-logo" src="assests/speero logo.jpg" alt="Speero" />
@@ -16425,15 +17656,60 @@ function VssHome({ onOpen }) {
         <p className="vss-card-sub">اختر القطعة مباشرة من صورة سيارتك</p>
         <span className="vss-card-cta">ابدأ <IconCornerArrow /></span>
       </div>
+      <div className="vss-card" role="button" tabIndex={0} onClick={onOpen3D}
+           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onOpen3D(); }}>
+        <div className="vss-card-icon"><IconCube /></div>
+        <h1 className="vss-card-title">البحث المرئي المتقدم</h1>
+        <p className="vss-card-sub">شاهد سيارتك بنموذج ثلاثي الأبعاد تفاعلي</p>
+        <span className="vss-card-cta">ابدأ <IconCornerArrow /></span>
+      </div>
     </div>
   );
 }
 
 function App() {
-  // isOpen drives the LocateScreen slide-up. No hash router here — just state.
+  // isOpen drives the LocateScreen (2D) slide-up; isOpen3D drives Locate3DScreen.
+  // No hash router here — just state, BUT opening a screen still pushes a
+  // history entry so the phone's hardware/gesture back button closes it
+  // instead of leaving the app or showing a blank page. The X button and the
+  // drag-to-close gesture close screens through the exact same path
+  // (history.back()) rather than setting state directly, so a physical back
+  // press and the X button are literally the same function, not two
+  // implementations that could drift out of sync.
   const [isOpen, setIsOpen] = useState(false);
+  const [isOpen3D, setIsOpen3D] = useState(false);
   // Stubbed cart: an array of { key, qty } items, same shape the prototype uses.
   const [cart, setCart] = useState([]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      // Close only when the entry we landed on is no longer one of ours.
+      // Nested levels (the expanded parts sheet) push their own entry carrying
+      // the same `vss` key — popping one of those belongs to the sheet, so the
+      // screen has to stay up, otherwise a back press with the parts list open
+      // would drop the user straight out to the home card.
+      const st = window.history.state;
+      const level = st && st.vss;
+      setIsOpen(level === "locate");
+      setIsOpen3D(level === "locate3d");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  // `depth` counts the entries this screen owns so closing can unwind them all.
+  const openLocate = () => { window.history.pushState({ vss: "locate", depth: 1 }, ""); setIsOpen(true); };
+  const openLocate3D = () => { window.history.pushState({ vss: "locate3d", depth: 1 }, ""); setIsOpen3D(true); };
+  // Closing always goes through the history entry the open* functions pushed
+  // — popstate (above) is what actually flips the state back to closed.
+  const closeScreen = () => {
+    // Unwind every entry the screen owns in one step. A plain back() from
+    // inside an expanded sheet would only pop the sheet's entry and leave the
+    // screen standing, so the X button would need two presses to get out.
+    const st = window.history.state;
+    if (st && st.vss) window.history.go(-(st.depth || 1));
+    else { setIsOpen(false); setIsOpen3D(false); }
+  };
 
   const addToCart = (key) => setCart((c) => {
     const exists = c.find((it) => it.key === key);
@@ -16444,11 +17720,21 @@ function App() {
 
   return (
     <>
-      <VssHome onOpen={() => setIsOpen(true)} />
+      <VssHome onOpen={openLocate} onOpen3D={openLocate3D} />
       <LocateScreen
         isOpen={isOpen}
-        onClose={() => setIsOpen(false)}
+        onClose={closeScreen}
         onCart={() => {}}            /* no cart drawer in this standalone build */
+        cartCount={cart.length}
+        drawerOpen={false}
+        cart={cart}
+        onAddToCart={addToCart}
+        onRemoveFromCart={removeFromCart}
+      />
+      <Locate3DScreen
+        isOpen={isOpen3D}
+        onClose={closeScreen}
+        onCart={() => {}}
         cartCount={cart.length}
         drawerOpen={false}
         cart={cart}
