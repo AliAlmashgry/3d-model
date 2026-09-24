@@ -1,0 +1,8 @@
+Model Information:
+* title:	2021 Hyundai Elantra
+* source:	https://sketchfab.com/3d-models/2021-hyundai-elantra-19ea8faf080140429e83fc6968fcfae1
+* author:	KOElkast1007 (https://sketchfab.com/koelkastasbers)
+
+Model License:
+* license type:	SKETCHFAB Standard (https://sketchfab.com/licenses)
+* requirements:	Under basic restrictions, use worldwide, on all types of media, commercially or not, and in all types of derivative works

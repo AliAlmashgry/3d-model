@@ -1,0 +1,106 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+<style>html,body{margin:0;background:#fff}model-viewer{width:600px;height:450px;background:#fff}</style>
+</head><body>
+<model-viewer id="mv" min-camera-orbit="auto auto 0m" min-field-of-view="1deg" max-field-of-view="120deg" shadow-intensity="1" shadow-softness="0.45" exposure="0.9" loading="eager" interaction-prompt="none"></model-viewer>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const mv = document.getElementById("mv");
+mv.setAttribute("camera-orbit", q.get("orbit") || "90deg 80deg 110%");
+mv.setAttribute("field-of-view", q.get("fov") || "30deg");
+mv.setAttribute("src", q.get("src"));
+window.probeGrid = (step = 6) => {
+  const r = mv.getBoundingClientRect();
+  const hits = new Map();
+  for (let y = 0; y < r.height; y += step) {
+    for (let x = 0; x < r.width; x += step) {
+      const m = mv.materialFromPoint(r.left + x, r.top + y);
+      if (!m) continue;
+      const h = hits.get(m.name) || { n: 0, x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 };
+      h.n++; h.x0 = Math.min(h.x0, x); h.y0 = Math.min(h.y0, y); h.x1 = Math.max(h.x1, x); h.y1 = Math.max(h.y1, y);
+      hits.set(m.name, h);
+    }
+  }
+  return [...hits.entries()].sort((a, b) => b[1].n - a[1].n)
+    .map(([n, h]) => n + "  px=" + h.n + "  rect=" + [h.x0,h.y0,h.x1,h.y1].join(",")).join("\n");
+};
+window.probeAt = (fx, fy) => {
+  const r = mv.getBoundingClientRect();
+  const m = mv.materialFromPoint(r.left + r.width * fx, r.top + r.height * fy);
+  return m ? m.name : "(none)";
+};
+/* Page-scale body tone: the median luminance of the car's lit panels, with the
+   white page and the dark trim/glass/shadow left out. The Camry reads 185. */
+window.bodyStats = (lo = 120, hi = 246) => {
+  const url = mv.toDataURL("image/png");
+  return new Promise((res) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.width; c.height = img.height;
+      const g = c.getContext("2d");
+      g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      const lum = [];
+      for (let i = 0; i < d.length; i += 4) {
+        const l = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+        if (l >= lo && l <= hi) lum.push(l);
+      }
+      lum.sort((a, b) => a - b);
+      const q = (f) => lum.length ? lum[Math.floor(lum.length * f)] : NaN;
+      res(JSON.stringify({ px: lum.length, p25: +q(0.25).toFixed(1), median: +q(0.5).toFixed(1), p75: +q(0.75).toFixed(1), size: c.width + "x" + c.height }));
+    };
+    img.src = url;
+  });
+};
+/* One vertical scan across a door seam: the raw luminance profile, for reading
+   the line's depth and width the way the Camry benchmark does. */
+window.scanRow = (fy, fx0, fx1) => {
+  const url = mv.toDataURL("image/png");
+  return new Promise((res) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.width; c.height = img.height;
+      const g = c.getContext("2d"); g.drawImage(img, 0, 0);
+      const y = Math.round(c.height * fy);
+      const x0 = Math.round(c.width * fx0), x1 = Math.round(c.width * fx1);
+      const d = g.getImageData(x0, y, x1 - x0, 1).data;
+      const out = [];
+      for (let i = 0; i < d.length; i += 4) out.push(Math.round(0.2126 * d[i] + 0.7152 * d[i+1] + 0.0722 * d[i+2]));
+      res(out.join(","));
+    };
+    img.src = url;
+  });
+};
+window.hideMaterials = (names) => {
+  for (const n of names) {
+    const m = mv.model.materials.find((mm) => mm.name === n);
+    if (m) { m.setAlphaMode("BLEND"); m.pbrMetallicRoughness.setBaseColorFactor([0,0,0,0]); }
+  }
+  return "ok";
+};
+const PROFILE = {
+  paint:    { base: [0.62, 0.63, 0.65, 1], metallic: 0, roughness: 0.75 },
+  interior: { base: [0.065, 0.065, 0.069, 1], metallic: 0, roughness: 0.8, emissive: [0.0078,0.0078,0.0085], drop: true },
+  wheel:    { base: [0.045,0.045,0.049,1], metallic: 0, roughness: 0.45 },
+  seat:     { base: [0.92,0.04,0.045,1], metallic: 0, roughness: 0.6, emissive: [0.05,0.003,0.003], drop: true },
+  taillight:{ base: [0.2,0.01,0.015,0.72], metallic: 0, roughness: 0.07 },
+  glass:    { base: [0.045,0.05,0.055,0.30], metallic: 0, roughness: 0.05, alphaMode: "BLEND", drop: true },
+};
+const look = JSON.parse(q.get("look") || "null");
+mv.addEventListener("load", () => {
+  if (look) for (const [slot, names] of Object.entries(look)) {
+    const r = PROFILE[slot]; if (!r) continue;
+    for (const name of names) {
+      const m = mv.model.materials.find((mm) => mm.name === name);
+      if (!m) { console.warn("MISSING " + name); continue; }
+      if (r.drop) { try { m.pbrMetallicRoughness.baseColorTexture.setTexture(null); } catch (e) {} }
+      m.pbrMetallicRoughness.setBaseColorFactor(r.base);
+      m.pbrMetallicRoughness.setMetallicFactor(r.metallic);
+      m.pbrMetallicRoughness.setRoughnessFactor(r.roughness);
+      if (r.emissive) m.setEmissiveFactor(r.emissive);
+      if (r.alphaMode) m.setAlphaMode(r.alphaMode);
+    }
+  } requestAnimationFrame(() => requestAnimationFrame(() => { document.body.dataset.ready = "true"; })); });
+</script></body></html>

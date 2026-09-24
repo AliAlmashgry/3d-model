@@ -1,0 +1,8 @@
+{
+  "c14-final.glb": { "paint": ["main_paint.001"], "interior": ["dark_plastic_grainy","M_dashboard","leather","car_plastic_grainy_gray","fabric_high","seat_fabric","belts","carpet.002","speaker"], "wheel": ["M_Steering_wheel"], "seat": ["Driver_Seat"] },
+  "so-final.glb": { "paint": ["sonata2015_paint"], "interior": ["intlight","sonatablack","aluminium","torpedo_leather","etk800_seats.skin_interior.beige"], "seat": ["Driver_Seat"], "glass": ["midsize_glass"] },
+  "op-final.glb": { "paint": ["Sparkling Silver"], "interior": ["2016 Kia Optima SXL_Matte__FF282828__spec_","2016 Kia Optima SXL_Matte__FF1B1B1B__spec_","2016 Kia Optima SXL_vehiclelights128__spec_RL_","2016 Kia Optima SXL_Matte__FFFFFFFF__prim_spec_"], "seat": ["Driver_Seat"] },
+  "ac-final.glb": { "paint": ["Urban Gray"] },
+  "el-final.glb": { "paint": ["carpaint"], "interior": ["qeeqeeq","nn7.001","black.007","black.003","salon_tex","material_11"], "seat": ["Driver_Seat"] },
+  "c17-final.glb": { "paint": ["e180body"], "interior": ["e180_interior","e180_int","e180_gray"], "seat": ["Driver_Seat"] }
+}

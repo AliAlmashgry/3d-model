@@ -1,0 +1,87 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+<style>
+  html,body{margin:0;background:#fff}
+  #wrap{display:grid;gap:0}
+  model-viewer{width:var(--w,520px);height:var(--h,400px);background:#fff;--poster-color:transparent}
+  .cell{position:relative}
+  .cap{position:absolute;left:4px;top:2px;font:11px system-ui;color:#333;z-index:2}
+</style></head><body>
+<div id="wrap"></div>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const srcs = (q.get("srcs") || "").split("|").filter(Boolean);
+const orbits = (q.get("orbits") || "90deg 80deg 110%").split("|");
+const fov = q.get("fov") || "30deg";
+const w = q.get("w") || 520, h = q.get("h") || 400;
+const profile = q.get("profile") === "1";
+const looks = JSON.parse(q.get("looks") || "{}");
+const q2 = q;
+const wrap = document.getElementById("wrap");
+wrap.style.gridTemplateColumns = `repeat(${q.get("cols") || orbits.length}, max-content)`;
+document.documentElement.style.setProperty("--w", w + "px");
+document.documentElement.style.setProperty("--h", h + "px");
+
+const PROFILE = {
+  paint:    { base: [0.62, 0.63, 0.65, 1], metallic: 0, roughness: 0.75 },
+  interior: { base: [0.065, 0.065, 0.069, 1], metallic: 0, roughness: 0.8, emissive: [0.012,0.012,0.014] },
+  wheel:    { base: [0.05,0.05,0.055,1], metallic: 0, roughness: 0.45 },
+  seat:     { base: [0.92,0.04,0.045,1], metallic: 0, roughness: 0.6, emissive: [0.05,0.003,0.003] },
+  taillight:{ base: [0.2,0.01,0.015,0.72], metallic: 0, roughness: 0.07 },
+  glass: { base: [0.045,0.05,0.055,0.30], metallic: 0, roughness: 0.05, alphaMode: "BLEND" },
+  hi1: { base: [1,0,0,1], metallic: 0, roughness: 0.6, emissive: [0.3,0,0] },
+  hi2: { base: [0,0.8,0,1], metallic: 0, roughness: 0.6, emissive: [0,0.25,0] },
+  hi3: { base: [0,0.2,1,1], metallic: 0, roughness: 0.6, emissive: [0,0.05,0.3] },
+  hi4: { base: [1,0,1,1], metallic: 0, roughness: 0.6, emissive: [0.3,0,0.3] },
+  hi5: { base: [1,0.5,0,1], metallic: 0, roughness: 0.6, emissive: [0.3,0.15,0] },
+  hi6: { base: [0,0.9,0.9,1], metallic: 0, roughness: 0.6, emissive: [0,0.28,0.28] },
+};
+let pending = 0;
+const done = [];
+for (const src of srcs) {
+  for (const orbit of orbits) {
+    const cell = document.createElement("div");
+    cell.className = "cell";
+    const mv = document.createElement("model-viewer");
+    mv.setAttribute("src", src);
+    mv.setAttribute("camera-orbit", orbit);
+    mv.setAttribute("field-of-view", fov);
+    mv.setAttribute("shadow-intensity", "1");
+    mv.setAttribute("shadow-softness", "0.45");
+    mv.setAttribute("exposure", "0.9");
+    mv.setAttribute("loading", "eager");
+    mv.setAttribute("interaction-prompt", "none");
+    pending++;
+    mv.addEventListener("load", () => {
+      if (profile) {
+        const look = looks[src.split("/").pop().split("?")[0]] || {};
+        for (const [slot, names] of Object.entries(look)) {
+          for (const name of names) {
+            const m = mv.model.materials.find((mm) => mm.name === name);
+            if (!m) { console.warn("MISSING MATERIAL " + name); continue; }
+            const r = PROFILE[slot];
+            m.pbrMetallicRoughness.setBaseColorFactor(r.base);
+            m.pbrMetallicRoughness.setMetallicFactor(r.metallic);
+            m.pbrMetallicRoughness.setRoughnessFactor(r.roughness);
+            if (r.emissive) m.setEmissiveFactor(r.emissive);
+            if (r.alphaMode) m.setAlphaMode(r.alphaMode);
+            if (slot === "interior" || slot === "seat" || slot === "glass" || slot.startsWith("hi") || (slot === "paint" && q.get("dropPaint") === "1")) {
+              try { m.pbrMetallicRoughness.baseColorTexture.setTexture(null); } catch (e) {}
+            }
+          }
+        }
+      }
+      console.log("MATERIALS " + src + " :: " + mv.model.materials.map((m) => m.name).join(" | "));
+      requestAnimationFrame(() => requestAnimationFrame(() => { if (--pending === 0) document.body.dataset.ready = "true"; }));
+    });
+    mv.addEventListener("error", (e) => { console.warn("LOADERR " + src + " " + JSON.stringify(e.detail||{})); if (--pending === 0) document.body.dataset.ready = "true"; });
+    cell.appendChild(mv);
+    const cap = document.createElement("div");
+    cap.className = "cap";
+    cap.textContent = src.split("/").pop().split("?")[0] + "  " + orbit;
+    cell.appendChild(cap);
+    wrap.appendChild(cell);
+  }
+}
+if (!srcs.length) document.body.dataset.ready = "true";
+</script></body></html>

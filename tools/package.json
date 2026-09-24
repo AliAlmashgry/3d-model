@@ -1,0 +1,11 @@
+{
+  "name": "vss-tools",
+  "private": true,
+  "description": "Dev tooling for the visual-search-standalone car models (not shipped).",
+  "type": "module",
+  "dependencies": {
+    "@gltf-transform/core": "^4.1.0",
+    "@gltf-transform/extensions": "^4.1.0",
+    "draco3dgltf": "^1.5.7"
+  }
+}
