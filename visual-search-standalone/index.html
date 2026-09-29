@@ -13649,7 +13649,7 @@ const CAR_LETTERS_AR = {
 };
 const carWarnedWords = new Set();
 function carTokensFromFile(src) {
-  const base = (String(src).split(/[?#]/)[0].split("/").pop() || "").replace(/\.glb$/i, "").toLowerCase();
+  const base = (String(src).split(/[?#]/)[0].split("/").pop() || "").replace(/.(glb|gltf)$/i, "").toLowerCase();
   return base.split(/[-_\s.]+/).filter(Boolean)
     // "cx5" -> ["cx", "5"], "f150" -> ["f", "150"]; a year is already one run.
     .flatMap((t) => t.match(/[a-z]+|\d+/g) || [t]);
@@ -13957,10 +13957,10 @@ function carFromEntry(entry) {
    against and they carry the ray-traced tone without drawn lines; their real
    panel gaps still shade themselves through the AO. Measured beside the
    Camry at page size, the six read 195 / 198 / 199 / 199 / 203 / 203 against
-   its 199, where unshaded they were 205-212.
-   Two are HEAVY: the Corolla 2014 at 14.7MB and the Sonata at 12.5MB, both
+   its 199, where unshaded it was 205-212.
+   which is HEAVY: the Sonata at 12.5MB,
    almost entirely 1024px PNG textures that belong to cabin materials the
-   profile paints flat (9.5MB of the Corolla's). The geometry is already as
+   profile paints flat. The geometry is already as
    small as Draco makes it; shrinking these further means touching textures,
    which the recipe above deliberately does not do. */
 const SEDAN_RADIUS = { front: "80%", sideLeft: "110%", rear: "80%", sideRight: "110%" };
@@ -14001,11 +14001,11 @@ const CARS = [
   // the file, not the material API here: changing a map at load cost a
   // recompile that held the loading overlay up about six seconds on a
   // software renderer.
-  { model: { src: "assets/nissan-altima-2019.glb?v=3", camera: { radius: SEDAN_RADIUS }, look: { paint: ["PAINT"], interior: ["neimat"], seat: ["Driver_Seat"] } } },
-  { model: { src: "assets/nissan-maxima-2020.glb?v=3", camera: { radius: SEDAN_RADIUS }, look: { paint: ["body"], interior: ["kolonki", "leather.002"], seat: ["Driver_Seat"], taillight: ["red_glass"] } } },
-  { model: { src: "assets/nissan-sentra-2020.glb?v=2", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Paint"], interior: ["phong4"], seat: ["Driver_Seat"] } } },
-  /* Six more sedans, added 2026-09-20 from exports in repo-root assets/ (the
-     two Corollas and the Elantra as Sketchfab-style scene.gltf folders, the
+  { model: { src: "assets/nissan-altima-2019.glb?v=4", camera: { radius: SEDAN_RADIUS }, look: { paint: ["PAINT"], interior: ["neimat"], seat: ["Driver_Seat"] } } },
+  { model: { src: "assets/nissan-maxima-2020.glb?v=4", camera: { radius: SEDAN_RADIUS }, look: { paint: ["body"], interior: ["kolonki", "leather.002"], seat: ["Driver_Seat"], taillight: ["red_glass"] } } },
+  { model: { src: "assets/nissan-sentra-2020.glb?v=3", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Paint"], interior: ["phong4"], seat: ["Driver_Seat"] } } },
+  /* five more sedans, added 2026-09-20 from exports in repo-root assets/ (the
+     Corolla and the Elantra as Sketchfab-style scene.gltf folders, the
      rest as .glb). Same recipe as the Nissans -- seat split, plate strip,
      compression, then step 7's shading -- plus, per car, whatever its export
      needed before the look profile could reach it at all; those extra steps
@@ -14018,13 +14018,7 @@ const CARS = [
   // car here that fills the `wheel` slot. Both plates were their own meshes
   // (Cube.002 front, Cube.003 rear) and sat in the bumper, not in a body
   // pocket, so removing them needed no occlusion patch.
-  { model: { src: "assets/toyota-corolla-2014.glb?v=2", camera: { radius: SEDAN_RADIUS }, look: { paint: ["main_paint.001"], interior: ["dark_plastic_grainy", "M_dashboard", "leather", "car_plastic_grainy_gray", "fabric_high", "seat_fabric", "belts", "carpet.002", "speaker"], wheel: ["M_Steering_wheel"], seat: ["Driver_Seat"] } } },
-  // e180_* despite the folder name; the cabin is three materials that all
-  // read as one dark shell under the profile. Four 60-triangle gauge meshes
-  // floated a metre above the roof (Object_51..54) and were stripped: nothing
-  // renders there, but they stretched the bounding box by 55% and the page
-  // frames on that box, so the car came up small at every zone stop.
-  { model: { src: "assets/toyota-corolla-2017.glb?v=2", camera: { radius: SEDAN_RADIUS }, look: { paint: ["e180body"], interior: ["e180_interior", "e180_int", "e180_gray"], seat: ["Driver_Seat"] } } },
+  { model: { src: "assets/toyota-corolla-2017.glb?v=3", camera: { radius: SEDAN_RADIUS }, look: { paint: ["e180body"], interior: ["e180_interior", "e180_int", "e180_gray"], seat: ["Driver_Seat"] } } },
   // The one car with a `glass` slot (see CAR_LOOK_PROFILE). Its paint carried
   // a flat 128px grey swatch instead of a colour, which multiplied the
   // profile's silver down to a dark grey -- `prune` folds a single-colour
@@ -14046,7 +14040,9 @@ const CARS = [
   // KHR_materials_pbrSpecularGlossiness, which the profile's
   // pbrMetallicRoughness calls cannot touch, so the build converts it first
   // (`metalrough`); without that the car simply keeps its exported colours.
-  { model: { src: "assets/kia-optima-2016.glb?v=2", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Sparkling Silver"], interior: ["2016 Kia Optima SXL_Matte__FF282828__spec_", "2016 Kia Optima SXL_Matte__FF1B1B1B__spec_", "2016 Kia Optima SXL_vehiclelights128__spec_RL_", "2016 Kia Optima SXL_Matte__FFFFFFFF__prim_spec_"], seat: ["Driver_Seat"] } } },
+  { model: { src: "assets/kia-optima-2016.glb?v=2", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Sparkling Silver"], interior: ["2016 Kia Optima SXL_Matte__FF282828__spec_", "2016 Kia Optima SXL_Matte__FF1B1B1B__spec_", "2016 Kia Optima SXL_vehiclelights128__spec_RL_", "2016 Kia Optima SXL_Matte__FFFFFFFF__prim_spec_"], seat: ["Driver_Seat"] } } },  
+  { model: { src: "assets/kia-sportage-2021.glb", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Sparkling Silver"] } } },
+  { model: { src: "assets/kia-sportage-2017.glb", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Sparkling Silver"] } } },
 ].map(carFromEntry);
 /* Sanity-check the registry at startup. Warnings, not throws: a bad entry
    costs an empty stage or an unframed car, not a broken page. */
