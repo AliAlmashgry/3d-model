@@ -3136,9 +3136,13 @@
     pointer-events: none;
     opacity: 0;
     /* The ONE fade for the whole loader — see the note on .mv-cube's dissolve
-       for why nothing inside may fade as well. 0.5s, not 0.3s: half a second
-       reads as settling rather than snapping, and the exit is the moment the
-       user has been waiting through.
+       for why nothing inside may fade as well.
+       0.15s: a quick clear-out, not a slow dissolve. It was 0.5s back when the
+       car simply cross-faded in underneath; now the car's arrival (carArrive)
+       is the moment, and a cube still half-visible over it for a third of a
+       second fought that motion right at the centre of the car. The cube now
+       gets out of the way, and the car starts arriving once it is two-thirds
+       gone (MV_CAR_REVEAL_LAG_MS), so the two barely overlap.
        KEEP IN SYNC with MV_LOADER_FADE_MS, which unmounts this element. That
        constant must stay >= this duration or the fade is cut off mid-flight.
 
@@ -3156,7 +3160,7 @@
        leaving is a handover and wants to be calm. Sharing one duration made the
        loader take half a second to show up on exactly the slow connections it
        exists for. */
-    transition: opacity 0.5s linear;
+    transition: opacity 0.15s linear;
     /* above model-viewer (z-index 11) so the cube reads as being in front of
        the stage the car is about to occupy */
     z-index: 13;
@@ -3217,19 +3221,16 @@
 
      Reuses .bs-dots for its markup, sizing and colour, but NOT its bs-d1/2/3
      keyframes: those are a CSS animation, and a CSS animation cannot be synced
-     to the cube. Matching the durations would not be enough — an animation's
-     start time and performance.now() are different origins, so the two would
-     begin out of phase and drift apart from there. So the cycle is driven from
-     JS instead, off the very clock that turns the cube (see mvCubeDots), and
-     lands here as a data-dots count. A dot changes exactly as the cube squares
-     up to a corner.
-     .bs-dots > span is opacity 0 by default, so only the lit cases need saying.
+     to the cube. Matching the durations would not be enough — each animation
+     starts on its own clock, so the two would begin out of phase and drift
+     apart from there. So LoaderDots starts the cycle from JS on the very clock
+     that turns the cube (see MV_DOTS_KEYS and mvLoopOnSharedClock), and a dot
+     changes exactly as the cube squares up to a corner. It is still a
+     compositor opacity animation, so it keeps going while the car's first
+     frames hold the main thread, exactly like the cube.
      Nothing fades: the dots land as discrete characters, the way an ellipsis is
      typed. (The keyframes themselves stay put — the search bar and discover
      screens still animate their dots the old way.) */
-  .mv-loader .bs-dots[data-dots="1"] > span:nth-child(1),
-  .mv-loader .bs-dots[data-dots="2"] > span:nth-child(-n+2),
-  .mv-loader .bs-dots[data-dots="3"] > span { opacity: 1; }
   /* The exit is a plain fade and nothing else — .mv-loader's opacity, applied to
      the whole group. There is deliberately NO rule for .mv-cube here.
 
@@ -3259,10 +3260,9 @@
     color: var(--red); background: none; border: 0; padding: 0 2px; cursor: pointer;
   }
   /* An isometric wireframe cube that genuinely turns — and every line in it
-     holds the SAME weight at every angle, which is the whole reason it is now
-     drawn rather than built.
+     holds the SAME weight at every angle.
 
-     Four earlier versions each failed differently, and each looked like the
+     Five earlier versions each failed differently, and each looked like the
      obvious fix for the one before it:
        - Three coloured panels flying in, one per third of the download. A
          build-in implies progress it was never measuring, and it only read as a
@@ -3280,49 +3280,49 @@
          swung with orientation, the exact opposite of a wireframe. (Its three
          inner edges were also drawn twice, once by each of the two visible faces
          sharing them.) Only three frames in eight read as a cube.
+       - One SVG path, re-projected and rewritten by a rAF loop every frame.
+         The drawing was finally right, but the loop lived on the main thread,
+         and the end of a load is exactly when model-viewer takes that thread
+         for a second or more (shader compile, texture upload, first frame). The
+         cube froze there, right before the car appeared, and read as a hang.
 
-     So the edges are real strokes now: mvCubeWire() projects the eight vertices
-     every frame and emits the visible ones as a single path, which gives one
-     stroke-width and a true linejoin at every angle. Hidden-line removal is an
-     explicit back-face test rather than backface-visibility. See the JS.
-
-     Cost: eight vertex rotations and one string per frame. An earlier comment
-     here argued that a rAF loop would burden the main thread during the Draco
-     decode; at this size that was overstated, and it is the only way to hold the
-     line weight constant. */
+     So the drawing is now pieces the compositor can move by itself: each edge
+     a flat bar, each vertex a dot, all animated on transform alone through
+     keyframes the JS samples from the same projection once (MV_CUBE_KEYS). A
+     bar only ever scales along its length, so the weight holds at every angle
+     as it did with the stroked path, and the dots at the vertices round every
+     join and end the way stroke-linejoin/linecap: round did. See the JS for
+     the geometry. */
   .mv-cube {
-    display: block; flex-shrink: 0;
-    /* 80x80 comes from the width/height attributes, and the 0 0 48 48 viewBox
-       makes one user unit render at 1.667px (so the 1.25 stroke lands at ~2.1px,
-       close to the 2px it carried at 64). Sized up from 64 to close some of the
-       gap to the car that replaces it — the handover is less of a jump when the
-       thing that leaves is nearer the size of the thing that arrives.
-       The drawing is centred on (24,24) and bounded analytically by
-       mvCubeWire's scale, so it cannot reach the edges. Nothing below it can
-       shift either way: the label is positioned off this box, not stacked
-       under it. */
+    /* 80x80 comes from MV_CUBE_BOX, inline. Sized up from 64 to close some of
+       the gap to the car that replaces it — the handover is less of a jump
+       when the thing that leaves is nearer the size of the thing that arrives.
+       The drawing is centred in the box and bounded analytically by
+       MV_CUBE_SCALE, so it cannot reach the edges. Nothing below it can shift
+       either way: the label is positioned off this box, not stacked under it. */
+    position: relative;
+    flex-shrink: 0;
   }
-  /* stroke-width is in USER units, so it scales with the box: the 1.5 that
-     rendered 2px at 64px would render 3px at 96px and turn a wireframe into a
-     heavy outline. 1.25 lands at 2.5px — a little more presence for a bigger
-     icon, while staying proportionally lighter than before (2.6% of the icon's
-     width against the old 3.1%).
+  /* Bars and dots share one ink. The line weight (~2.1px, the old path's
+     1.25-unit stroke at this size) and each piece's box are set inline from
+     MV_CUBE_LINE / MV_CUBE_BAR so the geometry has a single source.
      --text, the primary ink, swapped with the label: the cube IS the subject
      here and should carry the weight, while a transient status line has no
-     business being the darkest thing on an otherwise empty stage. The pairing
-     used to run the other way round. (Previously --muted, the same
-     grey .loc-hint and .drag-hint use, which lands the icon a step lighter than
-     the --text label beside it. (It was --hairline once — a BORDER token, ~1.2:1
-     on this near-white stage — which only survived while coloured panels carried
-     the drawing.) Round joins matter now that the three edges at the hexagon's
-     centre genuinely meet at a single point. */
-  .mv-cube-wire {
-    fill: none;
-    stroke: var(--text);
-    stroke-width: 1.25;
-    stroke-linejoin: round;
-    stroke-linecap: round;
+     business being the darkest thing on an otherwise empty stage. (Previously
+     --muted, the same grey .loc-hint and .drag-hint use; --hairline once — a
+     BORDER token, ~1.2:1 on this near-white stage — which only survived while
+     coloured panels carried the drawing.)
+     Physical left/top on purpose: the page is RTL, and the keyframes are
+     x-right screen coordinates. */
+  .mv-cube > i {
+    position: absolute; left: 0; top: 0;
+    background: var(--text);
   }
+  /* A bar is placed by its left-centre: the keyframes translate that point to
+     the edge's start, turn the bar to the edge's heading, then scaleX it to the
+     edge's length. */
+  .mv-cube-bar { transform-origin: 0 50%; }
+  .mv-cube-dot { border-radius: 50%; }
   /* The footer slot under the stage that carries the drag hint. It keeps its
      own box so the hint's fade never shifts the layout, and it is
      pointer-events: none: nothing in it is interactive (the loader lives inside
@@ -3347,18 +3347,11 @@
     /* Dots resolve to a static, visibly-dimmed "..." rather than disappearing —
        the same landing .bs-dots uses at its other call site. The cube below
        still carries the "something is happening" signal. This is not just a
-       preference here: under reduced motion the rAF loop never starts, so
-       data-dots would sit frozen on whatever it was rendered with and the label
-       would show a permanent single dot.
-       [data-dots] in the selector is load-bearing, not decoration. Without it
-       this is (0,3,1), exactly TYING the activation rules above, and would win
-       only by being later in the file. That tie has already produced one live
-       bug in this file — .bs-dots' own reduce rule loses to its own activation
-       rules for precisely this reason — so it is spelled out to win on
-       specificity (0,4,1) rather than on source order. */
-    .mv-loader .bs-dots[data-dots] > span:nth-child(1),
-    .mv-loader .bs-dots[data-dots] > span:nth-child(2),
-    .mv-loader .bs-dots[data-dots] > span:nth-child(3) { animation: none; opacity: 0.55; }
+       preference here: under reduced motion LoaderDots never starts its
+       animations, so without this all three would sit at .bs-dots' opacity 0
+       and the label would lose its ellipsis entirely. (0,2,1) beats that
+       (0,1,1) base on specificity, not on source order. */
+    .mv-loader .bs-dots > span { opacity: 0.55; }
     /* Reduce the motion, do not remove it. Killing the animation outright left
        a permanently frozen cube, which is indistinguishable from a hung app —
        worse for the very user the setting protects. A slow tumble is exactly the
@@ -3367,13 +3360,13 @@
        travel, no scaling, nothing that moves across the screen. (The same
        substitution the OS itself makes — Reduce Motion swaps slides for
        cross-fades.)
-       The rotation itself is stopped in JS, not here: mvCubeWire is asked once
-       for the isometric pose and no rAF loop starts, so the drawing is simply
-       never redrawn. Holding that pose matters — it IS what makes the shape a
+       The rotation itself is stopped in JS, not here: LoaderCube never starts
+       its animations, so the pieces simply stay at the isometric pose they are
+       rendered in. Holding that pose matters — it IS what makes the shape a
        cube, and this is the moving version paused rather than a different
        drawing.
        This composes with the handover rather than fighting it: the breath's
-       opacity is on the path, the dissolve's is on .mv-cube, so the two
+       opacity is on .mv-cube, the dissolve's on .mv-loader, so the two
        multiply.
        (Historical note, since the trap is easy to walk back into: while this was
        a CSS 3D cube the breath could NOT live on the element carrying
@@ -3381,9 +3374,7 @@
        to flatten, which collapsed all six faces onto one plane and rendered a
        plain tilted square, while the computed transform still read matrix3d. The
        drawing has no 3D context left, so the constraint is gone with it.) */
-    /* The car appears rather than eases in, same as everything else here. */
-    .car-stage-3d model-viewer { transition: none; }
-    .mv-cube-wire { animation: mvCubeBreathe 1.8s ease-in-out infinite; }
+    .mv-cube { animation: mvCubeBreathe 1.8s ease-in-out infinite; }
     /* Floor at 0.55 rather than 0.45: the icon is nothing but hairlines now, and
        fading 2px of --muted much further leaves too little of it to read. */
     @keyframes mvCubeBreathe {
@@ -3391,16 +3382,62 @@
       50%      { opacity: 1; }
     }
   }
-  /* Cross-fade the car in, rather than letting it snap to full strength the
-     instant it loads while the loader is still on top of it. The element is
-     already transparent before load (--poster-color: transparent, no poster), so
-     starting at 0 costs nothing during the wait — it only softens the arrival.
-     Keyed on modelLoaded, NOT hotspotsReady: the car should begin arriving as
-     the loader leaves, not 300ms later when the dots stage in.
-     0.32s against the loader's 0.5s, so the car is essentially there by the time
-     the cube finishes going. */
-  .car-stage-3d model-viewer { opacity: 0; transition: opacity 0.32s ease; }
-  .car-stage-3d[data-model-ready="true"] model-viewer { opacity: 1; }
+  /* The car's arrival — its greeting. It fades in at a little over half size,
+     a little high in the frame, and grows swiftly down into place, so it reads
+     as the car driving in to meet you rather than dissolving onto the stage.
+     Keyed on data-model-ready, which CarStage3D sets only once the car's first
+     frames are actually drawn (see MV_SETTLE_GAP_MS), and just after the
+     loader's quick fade has mostly cleared the cube (MV_CAR_REVEAL_LAG_MS).
+     It used to follow `load` directly, when the canvas
+     could still be empty for a second on a phone: the fade played out over
+     nothing and the car then snapped in at full strength.
+     A CSS transform on the element, not a camera move, for three reasons: it
+     runs on the compositor, so it stays smooth whatever model-viewer is still
+     doing on the main thread; it has an exact duration (model-viewer's camera
+     eases on its own decay, which MV_HOTSPOT_STAGGER_MS could not be timed
+     against); and the camera, the zoom and the framed FOV that pinch-zoom
+     measures from are never touched. The ground shadow is in the same canvas,
+     so it arrives with the car.
+     The origin is the CAR's middle, not the box's: its roof sits at ~30% of the
+     box and its wheels at ~86% (see .side-tag), so 58% grows it about its own
+     centre and the only vertical travel is the translateY below.
+     That travel — from 7% of the box above its spot (~27px on a phone) down to
+     rest — is what sells the approach. A pure zoom reads as a lens change: the
+     car just swells where it stands. A car that actually drives toward a
+     camera looking down at it sinks in the frame as it nears, and its drop and
+     its growth are one motion — both follow 1/distance. So the two share the
+     keyframe and the curve on purpose, and settle together — a drop on a curve
+     of its own would read as the car being lowered in rather than driving in.
+     Translate before scale in the list, so the 7% is of the unscaled box and
+     does not shrink with it.
+     The fade is short against the growth on purpose. By the time the car is
+     fully opaque (0.35s) it is already ~95% of its size, so what the eye
+     follows is the fast, decelerating last stretch — the "coming in" — not a
+     small car sitting there and then inflating. No fill-mode: once it ends the
+     element has no transform at all, so nothing downstream sees a scaled box.
+     The fade is declared on the READY rule only, so it runs one way: in. Going
+     back to not-ready (a lost WebGL context, or ?tune=1's Replay) hides the
+     car at once — a garbage canvas should not linger, and a replay has to
+     start from an empty stage.
+     KEEP IN STEP with MV_HOTSPOT_STAGGER_MS, which waits for this to settle,
+     and with CAR3D_TUNE_DEFAULTS in car3d-lab.jsx, which mirrors these
+     numbers. */
+  .car-stage-3d model-viewer { opacity: 0; transform-origin: 50% 58%; }
+  .car-stage-3d[data-model-ready="true"] model-viewer {
+    opacity: 1;
+    transition: opacity 0.35s ease-out;
+    animation: carArrive 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @keyframes carArrive { from { transform: translateY(-7%) scale(0.55); } }
+  /* The car appears rather than eases in, same as everything else under
+     reduced motion. After the rules above, and matching the arrival's
+     specificity: this used to sit inside the reduced-motion block further up,
+     where the plain fade rule — equally specific, later in the file — quietly
+     won and the fade still played. */
+  @media (prefers-reduced-motion: reduce) {
+    .car-stage-3d model-viewer,
+    .car-stage-3d[data-model-ready="true"] model-viewer { transition: none; animation: none; }
+  }
   .car-stage-3d model-viewer {
     width: 100%; height: 100%;
     --poster-color: transparent;
@@ -8014,6 +8051,20 @@
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+<script>
+/* ?tune=1 adds the experiment lab, car3d-lab.jsx (see its header). Inserted
+   right here, during parsing, so it lands AHEAD of the app's script: Babel
+   standalone runs text/babel scripts in document order, and the app reads
+   window.car3dLab once at start-up. A failed fetch only warns — the app then
+   runs as shipped. Needs http(s); a file:// page cannot fetch it. */
+(function () {
+  if (!/[?&]tune=1(&|$)/.test(location.search)) return;
+  var lab = document.createElement("script");
+  lab.type = "text/babel";
+  lab.src = "car3d-lab.jsx";
+  document.currentScript.after(lab);
+})();
+</script>
 
 <script type="text/babel">
 const { useState, useEffect, useLayoutEffect, useRef, useMemo } = React;
@@ -13330,11 +13381,18 @@ const CAR_LOOK_SLOTS = ["paint", "interior", "wheel", "seat", "taillight", "glas
 function applyLookProfile(mv, car) {
   const look = (car.model && car.model.look) || null;
   if (!mv.model || !look) return;
+  /* A file the lab's Cabin tool (tools/cabin-black.mjs) has run on carries the
+     whole cabin in one Interior_Black material, so the interior (and the
+     Camry's steering-wheel `wheel`) names it merged away are gone on purpose.
+     They stay listed so a Restore of the pre-black file paints its cabin
+     again; here they are simply skipped, not reported. */
+  const cabinBlack = mv.model.materials.some((m) => /^Interior_Black\b/.test(m.name) && (look.interior || []).includes(m.name));
   for (const slot of CAR_LOOK_SLOTS) {
     const recipe = CAR_LOOK_PROFILE[slot];
     for (const name of look[slot] || []) {
       const mat = mv.model.materials.find((m) => m.name === name);
       if (!mat) {
+        if (cabinBlack && (slot === "interior" || slot === "wheel")) continue;
         console.warn("[CARS] \"" + car.id + "\": look." + slot + " material \"" + name + "\" not found; this file has: " + mv.model.materials.map((m) => m.name).join(", "));
         continue;
       }
@@ -13724,6 +13782,18 @@ function carFromEntry(entry) {
                  separates. List a file's materials from the console with
                  mv.model.materials.map(m => m.name) or from the GLB's JSON;
                  leave black trim/roof materials out of paint.
+       lengthMm  the real car's bumper-to-bumper length in mm, for THAT model
+                 year (manufacturer figure; US-market where markets differ,
+                 as for the Nissans). The page never reads it: it is for the
+                 ?tune=1 Build tab, whose shading tools turn it into mm per
+                 model unit -- the reach of a drawn seam line and of the AO
+                 rays -- so a wrong figure shades every gap too wide or too
+                 thin. lab-server.mjs reports it per car. Leave it out when
+                 the figure is not known for sure (the Build tab's length
+                 then has to be set by hand) rather than guess: the Sportage
+                 2021 file has no length here because its materials name the
+                 2022 car, whose body is not the 2021's, and which one the
+                 mesh is was never measured.
      name/short  optional overrides of the derived Arabic name (name is what
                every screen header shows). Required only for a car with no
                model, which has no file name to derive from.
@@ -13969,6 +14039,7 @@ const CARS = [
     // Named from the file: id "toyota-camry-2020", "تويوتا كامري 2020" / "كامري 2020".
     model: {
       src: "assets/toyota-camry-2020.glb",
+      lengthMm: 4885,
       hotspots: CAR3D_HOTSPOT_3D,
       camera: {
         frontAzimuthDeg: 0,   // exported nose-to-+Z, so theta 0 is its front
@@ -14001,9 +14072,9 @@ const CARS = [
   // the file, not the material API here: changing a map at load cost a
   // recompile that held the loading overlay up about six seconds on a
   // software renderer.
-  { model: { src: "assets/nissan-altima-2019.glb?v=4", camera: { radius: SEDAN_RADIUS }, look: { paint: ["PAINT"], interior: ["neimat"], seat: ["Driver_Seat"] } } },
-  { model: { src: "assets/nissan-maxima-2020.glb?v=4", camera: { radius: SEDAN_RADIUS }, look: { paint: ["body"], interior: ["kolonki", "leather.002"], seat: ["Driver_Seat"], taillight: ["red_glass"] } } },
-  { model: { src: "assets/nissan-sentra-2020.glb?v=3", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Paint"], interior: ["phong4"], seat: ["Driver_Seat"] } } },
+  { model: { src: "assets/nissan-altima-2019.glb?v=4", lengthMm: 4900, camera: { radius: SEDAN_RADIUS }, look: { paint: ["PAINT"], interior: ["neimat"], seat: ["Driver_Seat"] } } },
+  { model: { src: "assets/nissan-maxima-2020.glb?v=4", lengthMm: 4897, camera: { radius: SEDAN_RADIUS }, look: { paint: ["body"], interior: ["kolonki", "leather.002"], seat: ["Driver_Seat"], taillight: ["red_glass"] } } },
+  { model: { src: "assets/nissan-sentra-2020.glb?v=3", lengthMm: 4641, camera: { radius: SEDAN_RADIUS }, look: { paint: ["Paint"], interior: ["phong4"], seat: ["Driver_Seat"] } } },
   /* five more sedans, added 2026-09-20 from exports in repo-root assets/ (the
      Corolla and the Elantra as Sketchfab-style scene.gltf folders, the
      rest as .glb). Same recipe as the Nissans -- seat split, plate strip,
@@ -14018,31 +14089,31 @@ const CARS = [
   // car here that fills the `wheel` slot. Both plates were their own meshes
   // (Cube.002 front, Cube.003 rear) and sat in the bumper, not in a body
   // pocket, so removing them needed no occlusion patch.
-  { model: { src: "assets/toyota-corolla-2017.glb?v=3", camera: { radius: SEDAN_RADIUS }, look: { paint: ["e180body"], interior: ["e180_interior", "e180_int", "e180_gray"], seat: ["Driver_Seat"] } } },
+  { model: { src: "assets/toyota-corolla-2017.glb?v=3", lengthMm: 4638, camera: { radius: SEDAN_RADIUS }, look: { paint: ["e180body"], interior: ["e180_interior", "e180_int", "e180_gray"], seat: ["Driver_Seat"] } } },
   // The one car with a `glass` slot (see CAR_LOOK_PROFILE). Its paint carried
   // a flat 128px grey swatch instead of a colour, which multiplied the
   // profile's silver down to a dark grey -- `prune` folds a single-colour
   // texture into the material's factor, so the profile's silver lands clean
   // and nothing had to be dropped by hand. Plates: Object_104 / Object_137.
-  { model: { src: "assets/hyundai-sonata-2015.glb?v=2", camera: { radius: SEDAN_RADIUS }, look: { paint: ["sonata2015_paint"], interior: ["intlight", "sonatablack", "aluminium", "torpedo_leather", "etk800_seats.skin_interior.beige"], seat: ["Driver_Seat"], glass: ["midsize_glass"] } } },
+  { model: { src: "assets/hyundai-sonata-2015.glb?v=2", lengthMm: 4855, camera: { radius: SEDAN_RADIUS }, look: { paint: ["sonata2015_paint"], interior: ["intlight", "sonatablack", "aluminium", "torpedo_leather", "etk800_seats.skin_interior.beige"], seat: ["Driver_Seat"], glass: ["midsize_glass"] } } },
   // Paint only, and that is the whole car: this export has no cabin at all --
   // its windows are opaque black geometry with nothing behind them -- so
   // there is no interior to recolour and no seat to carve out. It has no
   // plates either. Its materials are colour-coded ([Color M03] and friends);
   // "Urban Gray" is the body.
-  { model: { src: "assets/hyundai-accent-2018.glb?v=2", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Urban Gray"] } } },
+  { model: { src: "assets/hyundai-accent-2018.glb?v=2", lengthMm: 4385, camera: { radius: SEDAN_RADIUS }, look: { paint: ["Urban Gray"] } } },
   // frontAzimuthDeg 180: exported nose-to-MINUS-Z, the first car here whose
   // yaw is not the Camry's. It was also the one export whose vertices do not
   // live where the file says -- see the unskin step in the build notes.
-  { model: { src: "assets/hyundai-elantra-2021.glb?v=2", camera: { frontAzimuthDeg: 180, radius: SEDAN_RADIUS }, look: { paint: ["carpaint"], interior: ["qeeqeeq", "nn7.001", "black.007", "black.003", "salon_tex", "material_11"], seat: ["Driver_Seat"] } } },
+  { model: { src: "assets/hyundai-elantra-2021.glb?v=2", lengthMm: 4675, camera: { frontAzimuthDeg: 180, radius: SEDAN_RADIUS }, look: { paint: ["carpaint"], interior: ["qeeqeeq", "nn7.001", "black.007", "black.003", "salon_tex", "material_11"], seat: ["Driver_Seat"] } } },
   // Long names, but they are the file's: this is a game rip whose materials
   // are named after their hex colour. Everything it has was authored as
   // KHR_materials_pbrSpecularGlossiness, which the profile's
   // pbrMetallicRoughness calls cannot touch, so the build converts it first
   // (`metalrough`); without that the car simply keeps its exported colours.
-  { model: { src: "assets/kia-optima-2016.glb?v=2", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Sparkling Silver"], interior: ["2016 Kia Optima SXL_Matte__FF282828__spec_", "2016 Kia Optima SXL_Matte__FF1B1B1B__spec_", "2016 Kia Optima SXL_vehiclelights128__spec_RL_", "2016 Kia Optima SXL_Matte__FFFFFFFF__prim_spec_"], seat: ["Driver_Seat"] } } },  
+  { model: { src: "assets/kia-optima-2016.glb?v=2", lengthMm: 4855, camera: { radius: SEDAN_RADIUS }, look: { paint: ["Sparkling Silver"], interior: ["2016 Kia Optima SXL_Matte__FF282828__spec_", "2016 Kia Optima SXL_Matte__FF1B1B1B__spec_", "2016 Kia Optima SXL_vehiclelights128__spec_RL_", "2016 Kia Optima SXL_Matte__FFFFFFFF__prim_spec_"], seat: ["Driver_Seat"] } } },  
   { model: { src: "assets/kia-sportage-2021.glb", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Sparkling Silver"] } } },
-  { model: { src: "assets/kia-sportage-2017.glb", camera: { radius: SEDAN_RADIUS }, look: { paint: ["Sparkling Silver"] } } },
+  { model: { src: "assets/kia-sportage-2017.glb", lengthMm: 4480, camera: { radius: SEDAN_RADIUS }, look: { paint: ["Sparkling Silver"] } } },
 ].map(carFromEntry);
 /* Sanity-check the registry at startup. Warnings, not throws: a bad entry
    costs an empty stage or an unframed car, not a broken page. */
@@ -14052,6 +14123,10 @@ const CARS = [
     if (!c.model) continue;
     if (!c.model.src) console.warn("[CARS] \"" + c.id + "\" has a model but no src: <model-viewer> has nothing to load.");
     if (!c.model.look || !c.model.look.paint || !c.model.look.paint.length) console.warn("[CARS] \"" + c.id + "\" names no look.paint material: it will keep its exported colour instead of the shared profile.");
+    // A passenger car is 3-6.5 m; anything else is a typo (inches, metres, a
+    // dropped digit) that would scale the Build tab's shading by the same error.
+    const len = c.model.lengthMm;
+    if (len !== undefined && !(Number.isInteger(len) && len >= 3000 && len <= 6500)) console.warn("[CARS] \"" + c.id + "\" lengthMm " + JSON.stringify(len) + " is not a car length in whole mm (3000-6500).");
     const r = c.model.camera && c.model.camera.radius;
     if (r) {
       const missing = CAR3D_VIEW_ZONES.filter((z) => !(z in r));
@@ -14118,18 +14193,57 @@ const MV_LOADER_DEAD_MS = 8000;
    progress event, so a genuinely slow download never trips it. */
 const MV_LOADER_HARD_MS = 40000;
 /* How long the exit is given before the node is removed. This MUST stay >=
-   .mv-loader's opacity transition (0.5s) and .mv-cube's transform (0.5s), both
-   in the stylesheet — this constant is what unmounts the element, so anything
-   shorter guillotines the animation mid-flight. Nothing enforces the pairing
-   across the CSS/JS boundary, so it is spelled out at both ends.
-   It was 300 against a 360ms transform, i.e. already cutting the scale short;
-   that went unnoticed only because the opacity had reached 0 first. 20ms of
-   slack over the 500 absorbs timer jitter. */
-const MV_LOADER_FADE_MS = 520;
+   .mv-loader's opacity transition (0.15s) in the stylesheet — this constant is
+   what unmounts the element, so anything shorter guillotines the fade
+   mid-flight. Nothing enforces the pairing across the CSS/JS boundary, so it
+   is spelled out at both ends. 30ms of slack absorbs timer jitter. */
+const MV_LOADER_FADE_MS = 180;
+/* How far the car's arrival trails the start of the cube's fade: at 100ms the
+   0.15s linear fade has the cube at a third of its strength, and the car —
+   itself starting from opacity 0 — only becomes clearly visible after that,
+   so the cube is effectively gone before the car's motion reads. A little
+   overlap is kept on purpose: waiting for a fully empty stage would put a
+   blank beat between the two. Applies only when the loader was on screen; on
+   the fast path (never shown) the car arrives at once. */
+const MV_CAR_REVEAL_LAG_MS = 100;
 /* A beat between the model appearing and its hotspots landing on it. Without
-   it the loader fading, the poster giving way and five red dots arriving all
-   happen in one frame, which reads as a flicker rather than a reveal. */
-const MV_HOTSPOT_STAGGER_MS = 300;
+   it the loader fading, the car arriving and five red dots showing all happen
+   in one frame, which reads as a flicker rather than a reveal.
+   Timed to the car's arrival (the carArrive keyframes on model-viewer: 0.9s,
+   quint ease-out from 7% high at scale 0.55), which is visually over by here —
+   at 550ms the car is past 99% of its size and within ~0.3px of its spot, the
+   rest is an imperceptible settle. The
+   dots are slotted inside model-viewer, so they would scale with the car
+   anyway, but a dot growing into place reads as a glitch, not an arrival.
+   Change the animation and this goes with it. */
+const MV_HOTSPOT_STAGGER_MS = 550;
+
+/* ── Experiment hooks (car3d-lab.jsx) ──────────────────────────────────────────
+   The ?tune=1 dial panel and any future experiments on this stage live in
+   their own file, car3d-lab.jsx, next to this page. It is fetched only with
+   ?tune=1 (the small script just above this one adds it), runs before this
+   script, and registers itself as window.car3dLab. Its header lists the
+   whole contract.
+   Without it CAR3D_LAB is null and every hook below is the shipped constant
+   or a no-op, so production carries no experiment code at all beyond these
+   few lines and the Replay effect in ModelLoader. */
+const CAR3D_LAB = window.car3dLab || null;
+/* The lab's live values (shadow, exposure, the replay counter), re-rendering
+   the caller whenever one changes; null without the lab. */
+function useCar3dLab() {
+  const [, bump] = useState(0);
+  useEffect(() => (CAR3D_LAB ? CAR3D_LAB.subscribe(() => bump((n) => n + 1)) : undefined), []);
+  return CAR3D_LAB ? CAR3D_LAB.values : null;
+}
+const car3dRevealLagMs = () => (CAR3D_LAB ? CAR3D_LAB.revealLagMs() : MV_CAR_REVEAL_LAG_MS);
+const car3dLoaderFadeMs = () => (CAR3D_LAB ? CAR3D_LAB.loaderFadeMs() : MV_LOADER_FADE_MS);
+const car3dHotspotStaggerMs = () => (CAR3D_LAB ? CAR3D_LAB.hotspotStaggerMs() : MV_HOTSPOT_STAGGER_MS);
+/* The lab's Build tab previews an edited car before it is saved: srcFor swaps
+   the model-viewer src for a draft served by tools/lab-server.mjs, and carFor
+   lets the preview carry a look slot the registry does not have yet (a car
+   getting its first Driver_Seat). Both return the shipped value otherwise. */
+const car3dSrcFor = (src) => (CAR3D_LAB && CAR3D_LAB.srcFor ? CAR3D_LAB.srcFor(src) || src : src);
+const car3dCarFor = (car) => (CAR3D_LAB && CAR3D_LAB.carFor ? CAR3D_LAB.carFor(car) || car : car);
 
 /* ── Side tags ────────────────────────────────────────────────────────────────────────
    يمين / يسار beside the car, naming its two flanks once per opening of the
@@ -14202,78 +14316,204 @@ const MV_CUBE_SCALE = 13;
    peaked around 182°/s, so this is a little over half its fastest moment.) */
 const MV_CUBE_PERIOD = 4000;
 
-/* Yaw in degrees for a given clock reading — a plain constant-rate turn starting
-   from 45°, the isometric corner, and passing back through it every 90°.
-   Driven from absolute time, not from a start timestamp, so the effect below can
-   be torn down and restarted on a phase change without the cube jumping back to
-   its opening pose.
+/* Why the turn is a set of browser-run animations rather than a frame loop.
+   It used to be a requestAnimationFrame loop that re-projected the cube and
+   rewrote one SVG path every frame. That loop ran on the page's main thread —
+   the thread model-viewer needs, right at the end of a load, to compile the
+   car's shaders, upload its textures and draw its first frame (and once more
+   straight after, when applyLookProfile swaps materials and forces a
+   recompile). On a phone that holds the thread for a second or more, so the
+   cube froze solid at exactly the moment the car was about to appear, and the
+   screen read as hung.
+   Transform and opacity animations are the ones every engine runs on its
+   compositor, which keeps ticking while the main thread is busy. So the cube
+   is now twelve bars and eight dots, each moved by its own transform animation
+   through keyframes sampled from the same projection once, at start-up, and
+   the label's ellipsis is three opacity animations on the same clock. Once
+   started, nothing here needs the main thread again. */
 
-   This used to dwell on each corner for a third of every quarter-turn and ease
-   through the rest, to skip quickly past the face-on poses where a cube narrows
-   to a rectangle. That dwell is gone, and the reason it is not worth
-   reintroducing: it was really compensating for the OLD rendering, where edges
-   were CSS borders and a face turned steeply away thickened into a dark bar, so
-   the in-between poses were genuinely ugly. Edges are projected strokes now and
-   hold constant weight at every angle (measured spread 1.05x across a turn), so
-   there is nothing left to hurry past.
+/* CSS px per viewBox unit. The drawing was authored in a 48-unit box shown at
+   80px, and every number above is still in those units. */
+const MV_CUBE_BOX = 80;
+const MV_CUBE_PX = MV_CUBE_BOX / 48;
+/* The line weight: the old path's 1.25-unit stroke, ~2.08px. Each edge is a
+   bar this tall and each vertex a dot this wide — the dots are what round the
+   joins and the ends, the way stroke-linejoin/linecap: round did. */
+const MV_CUBE_LINE = 1.25 * MV_CUBE_PX;
+/* A bar's unscaled length: a whole edge seen square-on, the longest any edge
+   can project (the projection only ever drops z). The animation shortens it
+   with scaleX, which stretches along the bar and never across it — so, like
+   the stroked path before it, the weight is identical at every angle. */
+const MV_CUBE_BAR = 2 * MV_CUBE_SCALE * MV_CUBE_PX;
+/* Keyframes per turn: one every 5°. The compositor interpolates linearly
+   between them, which strays from the true projection by ~0.03px — far under
+   a device pixel, so the turn still reads as a rigid rotation. */
+const MV_CUBE_STEPS = 72;
 
-   PLUS, so the near face travels left-to-right. The sign is not guesswork: the
-   projection's screen-x is `a = x·cosθ + z·sinθ` and nothing else — the X tilt
-   only ever mixes y and z, so it cannot move a point horizontally. The front
-   face centre is (0,0,1), i.e. a = sin θ, which GROWS with θ. Increasing yaw
-   therefore carries the near face rightward. */
-function mvCubeYaw(ms) {
-  return 45 + 360 * (ms % MV_CUBE_PERIOD) / MV_CUBE_PERIOD;
-}
-
-/* How many of the label's three dots are lit, from the SAME clock the cube turns
-   on — which is the whole point. Two CSS animations of equal duration would not
-   be synced: an animation's start time and performance.now() are different
-   origins, so they would begin out of phase and drift from there. Sharing one
-   normalised t makes the relationship exact by construction.
-   floor(t*4) steps at t = 0, ¼, ½, ¾, and those are precisely the instants the
-   yaw above hits a corner pose (45° mod 90) — so a dot lands exactly as the cube
-   squares up, every time, for as long as the loader is on screen.
-   The `+1) % 4` preserves the cycle the CSS keyframes ran: ".", "..", "...",
-   none — opening on a dot rather than on a beat of nothing. */
-function mvCubeDots(ms) {
-  const t = (ms % MV_CUBE_PERIOD) / MV_CUBE_PERIOD;
-  return (Math.floor(t * 4) + 1) % 4;
-}
-
-/* Projects the cube at `yawDeg` and returns the path data for all twelve of its
-   edges — the cube is see-through, so the far ones are drawn along with the
-   near.
-   Orthographic: rotate, then drop z. No perspective divide — that is what keeps
-   parallel edges parallel and makes each frame read as a flat drawing. Both axes
-   take the SAME scale, which is what makes this a rotation rather than a morph:
-   a uniform scale commutes with the rotation, so the cube stays rigid through
-   the turn.
-   Every edge is emitted exactly once, straight from MV_CUBE_EDGES, so no line is
-   ever double-struck and none is heavier than its neighbours.
-   What the corner pose looks like now is worth knowing, because it is not
-   obvious: the near and far corners both project onto the centre, and their two
-   Y-junctions land 60° apart, so the drawing is the hexagon outline plus SIX
-   spokes to its vertices rather than three. The classic see-through isometric
-   cube. It can also read as flipping inside-out (a Necker cube) — inherent to
-   drawing a transparent solid, and the price of being hollow. */
-function mvCubeWire(yawDeg) {
+/* The eight vertices at `yawDeg`, in CSS px inside the MV_CUBE_BOX square.
+   Orthographic: rotate, then drop z. No perspective divide — that is what
+   keeps parallel edges parallel and makes each pose read as a flat drawing.
+   Both axes take the SAME scale, which is what makes this a rotation rather
+   than a morph.
+   What the corner pose looks like is worth knowing, because it is not
+   obvious: the near and far corners both project onto the centre, and their
+   two Y-junctions land 60° apart, so the drawing is the hexagon outline plus
+   SIX spokes to its vertices rather than three. The classic see-through
+   isometric cube. It can also read as flipping inside-out (a Necker cube) —
+   inherent to drawing a transparent solid, and the price of being hollow. */
+function mvCubePoints(yawDeg) {
   const th = yawDeg * Math.PI / 180;
   const cy = Math.cos(th), sy = Math.sin(th);
   const cx = Math.cos(MV_CUBE_TILT), sx = Math.sin(MV_CUBE_TILT);
   // rotateX(tilt) · rotateY(yaw) — the same order the CSS version used.
-  const rot = (p) => {
+  return MV_CUBE_V.map((p) => {
     const a = p[0] * cy + p[2] * sy;
-    const b = p[1];
     const c = -p[0] * sy + p[2] * cy;
-    return [a, b * cx - c * sx, b * sx + c * cx];
+    const b = p[1] * cx - c * sx;
+    return [(MV_CUBE_C + a * MV_CUBE_SCALE) * MV_CUBE_PX, (MV_CUBE_C + b * MV_CUBE_SCALE) * MV_CUBE_PX];
+  });
+}
+
+/* One keyframe list per bar and per dot, for a whole turn, starting from 45° —
+   the isometric corner — and passing back through it every 90°.
+   PLUS yaw, so the near face travels left-to-right: the projection's screen-x
+   is `x·cosθ + z·sinθ` and the tilt only ever mixes y and z, so the front
+   face centre (0,0,1) sits at sin θ, which grows with θ.
+   A bar is `translate(start) rotate(heading) scaleX(length)` from its left
+   centre (see .mv-cube-bar), so each keyframe places one edge exactly. The
+   heading is unwrapped against the previous keyframe because rotate()
+   interpolates the raw number: a step from 179° to -179° would otherwise spin
+   the bar the long way round. Over the full turn a sloping edge's heading
+   winds through 360°, so the last keyframe differs from the first by exactly
+   that — the same pose, and the loop's restart is seamless.
+   A whole turn rather than one quarter-turn, though the cube repeats every
+   90°: after a quarter each edge sits where a DIFFERENT edge started, so a
+   quarter-turn loop would need all twenty elements to jump back on the very
+   same frame to hide the swap. Over a full turn each one simply comes home. */
+const MV_CUBE_KEYS = (() => {
+  const px = (n) => n.toFixed(3) + "px";
+  const bars = MV_CUBE_EDGES.map(() => []);
+  const dots = MV_CUBE_V.map(() => []);
+  const heading = MV_CUBE_EDGES.map(() => null);
+  for (let k = 0; k <= MV_CUBE_STEPS; k++) {
+    const pts = mvCubePoints(45 + 360 * k / MV_CUBE_STEPS);
+    MV_CUBE_EDGES.forEach(([i, j], e) => {
+      const [x0, y0] = pts[i], [x1, y1] = pts[j];
+      let deg = Math.atan2(y1 - y0, x1 - x0) * 180 / Math.PI;
+      if (heading[e] !== null) deg += 360 * Math.round((heading[e] - deg) / 360);
+      heading[e] = deg;
+      const len = Math.hypot(x1 - x0, y1 - y0) / MV_CUBE_BAR;
+      bars[e].push({ transform: `translate(${px(x0)}, ${px(y0)}) rotate(${deg.toFixed(3)}deg) scaleX(${len.toFixed(4)})` });
+    });
+    pts.forEach(([x, y], v) => dots[v].push({ transform: `translate(${px(x)}, ${px(y)})` }));
+  }
+  return { bars, dots };
+})();
+
+/* The label's ellipsis, on the cube's clock: ".", "..", "...", none — one step
+   per quarter-turn, and every quarter is exactly where the yaw passes a corner
+   pose (45° mod 90), so a dot lands as the cube squares up. Dot d is lit from
+   quarter d until the fourth.
+   The jumps are ramps of MV_DOTS_RAMP of the period (0.4ms), not steps():
+   not every engine runs a stepped animation on its compositor, and a ramp that
+   short is at worst one frame of a half-lit dot. */
+const MV_DOTS_RAMP = 1e-4;
+const MV_DOTS_KEYS = [0, 1, 2].map((d) => [
+  { offset: 0, opacity: d === 0 ? 1 : 0 },
+  ...(d === 0 ? [] : [{ offset: d / 4 - MV_DOTS_RAMP, opacity: 0 }, { offset: d / 4, opacity: 1 }]),
+  { offset: 3 / 4 - MV_DOTS_RAMP, opacity: 1 },
+  { offset: 3 / 4, opacity: 0 },
+  { offset: 1, opacity: 0 },
+]);
+
+/* Loops `keys` on `el` once per MV_CUBE_PERIOD, pinned to the document
+   timeline's zero rather than to "now". Every animation started this way is
+   in phase with every other, however far apart they were created — the cube
+   mounts with the loader, the ellipsis with each loading phase — which is
+   what keeps the dots landing on the cube's corners. (Two CSS animations of
+   equal duration would not do: each starts on its own clock and they drift.) */
+function mvLoopOnSharedClock(el, keys) {
+  const anim = el.animate(keys, { duration: MV_CUBE_PERIOD, iterations: Infinity });
+  anim.startTime = 0;
+  return anim;
+}
+
+function mvReducedMotion() {
+  try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; }
+}
+
+/* The loader's cube: twelve bars and eight dots, rendered at the opening
+   isometric pose so the first paint is already a finished drawing — and so
+   reduced motion, which never starts the turn, still gets a cube (CSS
+   breathes its opacity instead; see the reduced-motion block).
+   useLayoutEffect so the animations are attached before the first paint;
+   otherwise the cube would show the opening pose for a frame and then jump to
+   wherever the shared clock is. */
+function LoaderCube() {
+  const ref = useRef(null);
+  useLayoutEffect(() => {
+    const box = ref.current;
+    if (!box || !box.animate || mvReducedMotion()) return;
+    const anims = [];
+    box.querySelectorAll(".mv-cube-bar").forEach((el, i) => anims.push(mvLoopOnSharedClock(el, MV_CUBE_KEYS.bars[i])));
+    box.querySelectorAll(".mv-cube-dot").forEach((el, i) => anims.push(mvLoopOnSharedClock(el, MV_CUBE_KEYS.dots[i])));
+    return () => anims.forEach((a) => a.cancel());
+  }, []);
+  const line = MV_CUBE_LINE + "px", half = -MV_CUBE_LINE / 2 + "px";
+  return (
+    <div className="mv-cube" ref={ref} style={{ width: MV_CUBE_BOX, height: MV_CUBE_BOX }} aria-hidden="true">
+      {MV_CUBE_KEYS.bars.map((k, i) => (
+        <i key={"b" + i} className="mv-cube-bar" style={{ width: MV_CUBE_BAR + "px", height: line, marginTop: half, transform: k[0].transform }} />
+      ))}
+      {MV_CUBE_KEYS.dots.map((k, i) => (
+        <i key={"d" + i} className="mv-cube-dot" style={{ width: line, height: line, margin: `${half} 0 0 ${half}`, transform: k[0].transform }} />
+      ))}
+    </div>
+  );
+}
+
+/* The label's trailing ellipsis, on the cube's clock (MV_DOTS_KEYS). Under
+   reduced motion nothing starts and CSS pins all three at a dimmed "...". */
+function LoaderDots() {
+  const ref = useRef(null);
+  useLayoutEffect(() => {
+    const box = ref.current;
+    if (!box || !box.animate || mvReducedMotion()) return;
+    const anims = [...box.children].map((el, d) => mvLoopOnSharedClock(el, MV_DOTS_KEYS[d]));
+    return () => anims.forEach((a) => a.cancel());
+  }, []);
+  return <span className="bs-dots" ref={ref} aria-hidden="true"><span></span><span></span><span></span></span>;
+}
+
+/* `load` is not the car on screen. After it, the first frames still have to be
+   drawn — shader compile, texture upload, the ground shadow, then a recompile
+   for the materials applyLookProfile just changed — and on a phone that can
+   hold the main thread for a second or more. Revealing at `load` spent the
+   fade on a canvas that was still empty or still in the file's own colours,
+   and the car then snapped in when those frames finally landed.
+   So the reveal waits for frames to flow again: MV_SETTLE_FRAMES in a row,
+   each within MV_SETTLE_GAP_MS of the last (20fps — a phone in low-power mode
+   running at 30 still counts). A blocked thread cannot be measured while it
+   is blocked — rAF simply does not fire — so it is the calm frames AFTER it
+   that prove it is over. MV_SETTLE_MAX_MS caps the wait for a device that
+   never gets that smooth. The cube keeps turning on the compositor the whole
+   time, so waiting costs nothing on screen. */
+const MV_SETTLE_GAP_MS = 50;
+const MV_SETTLE_FRAMES = 3;
+const MV_SETTLE_MAX_MS = 1500;
+
+/* Calls `done` once frames are flowing freely (see above); returns a cancel. */
+function mvWhenFramesSettle(done) {
+  const start = performance.now();
+  let last = 0, calm = 0, raf = 0;
+  const tick = (now) => {
+    calm = last && now - last < MV_SETTLE_GAP_MS ? calm + 1 : 0;
+    last = now;
+    if (calm >= MV_SETTLE_FRAMES || now - start >= MV_SETTLE_MAX_MS) { done(); return; }
+    raf = requestAnimationFrame(tick);
   };
-  const pts = MV_CUBE_V.map(rot);
-  const at = (i) => (MV_CUBE_C + pts[i][0] * MV_CUBE_SCALE).toFixed(2) + " " +
-                    (MV_CUBE_C + pts[i][1] * MV_CUBE_SCALE).toFixed(2);
-  let d = "";
-  for (const [a, b] of MV_CUBE_EDGES) d += "M" + at(a) + "L" + at(b);
-  return d;
+  raf = requestAnimationFrame(tick);
+  return () => cancelAnimationFrame(raf);
 }
 
 /* Loading state for the 3D stage: the wireframe cube above and a label.
@@ -14285,14 +14525,24 @@ function mvCubeWire(yawDeg) {
    no timers, no listeners -- until `active`, which is CarStage3D's `armed`.
    It stays mounted for the stage's whole life (phase "idle" after a load, also
    rendering nothing) so a WebGL context lost AFTER the load can still surface
-   as the "lost" state with its reload button. */
-function ModelLoader({ viewerRef, active, onFailed }) {
+   as the "lost" state with its reload button.
+   It also decides WHEN the car is shown: `onReveal(true)` fires on the beat
+   the loader starts leaving, once the car's first frames are really drawn
+   (see MV_SETTLE_GAP_MS) and the loader's minimum time is up, so the cube's
+   exit and the car's arrival are one handover.
+   `src` is the url CarStage3D hands model-viewer. The stage is not remounted
+   when it changes under a car already on show -- the ?tune=1 Build tab's
+   draft preview swaps it, and turning the preview off swaps it back -- so a
+   change has to start the whole cycle again here, cube and all (see the load
+   effect). The first src is the ordinary first load, not a change. */
+function ModelLoader({ viewerRef, active, src, onFailed, onReveal }) {
   /* waiting -> downloading -> preparing -> done -> idle, or error from
      anywhere, or lost (WebGL context gone) from anywhere including idle.
      `preparing` is the phase the first version missed: totalProgress reaches 1
      when the last byte lands, but Draco decode and texture upload still take a
      visible beat on a mid-range phone -- a bar sitting full while nothing
-     happens is exactly where a load feels broken. */
+     happens is exactly where a load feels broken. It also covers the wait
+     between `load` and the first drawn frames. */
   const [phase, setPhase] = useState("waiting");
   const [shown, setShown] = useState(false);   // drives the fade, not presence
   const [slow, setSlow] = useState(false);
@@ -14303,6 +14553,33 @@ function ModelLoader({ viewerRef, active, onFailed }) {
   const stallRef = useRef(0);
   const hardRef = useRef(0);
 
+  /* A src change, caught in the commit that makes it. This is the one piece
+     of the load watch that cannot wait for the passive effect below:
+     model-viewer starts on a new src a microtask after React writes the
+     attribute, and a file it already holds in its in-memory cache (turning
+     the draft preview OFF goes back to the shipped car, loaded minutes ago)
+     can be parsed and announce `load` before a passive effect runs -- that
+     event would be lost, and the loader would sit at "downloading" until
+     its own timers called it a failure. Nor can the effect simply read
+     mv.loaded: at that point it may still be true FROM THE OLD FILE. So a
+     layout effect -- synchronous with the commit, ahead of model-viewer's
+     microtask -- marks the change and records whether a `load` lands before
+     the load effect takes over; the effect consumes the mark (swapRef). */
+  const srcRef = useRef(src);
+  const swapRef = useRef(null);                // { loaded } for a src change not yet taken up
+  useLayoutEffect(() => {
+    if (!active || !src) return;
+    const prev = srcRef.current;
+    srcRef.current = src;
+    const mv = viewerRef.current;
+    if (!prev || prev === src || !mv) return;
+    const swap = { loaded: false };
+    swapRef.current = swap;
+    const onEarlyLoad = () => { swap.loaded = true; };
+    mv.addEventListener("load", onEarlyLoad);
+    return () => mv.removeEventListener("load", onEarlyLoad);
+  }, [viewerRef, active, src]);
+
   useEffect(() => {
     /* Nothing to watch until the stage sets src. Returning here keeps the phase
        at "waiting", so a stage parked under the home screen can never run the
@@ -14311,11 +14588,65 @@ function ModelLoader({ viewerRef, active, onFailed }) {
     const mv = viewerRef.current;
     if (!mv) return;
     let alive = true;
-    if (mv.loaded) { setPhase("done"); return; }   // already there: never show
+    /* Both ways a load can end come through here: "done" only once the frames
+       have settled, never on `load` itself (see MV_SETTLE_GAP_MS).
+       Every call starts a fresh wait. It used to keep the first one
+       (`if (!stopSettle)`), and that wait had long since finished by the time
+       a second `load` came -- a new src under the same stage -- so nothing
+       ever set "done" again: the car stayed hidden behind a "preparing" cube
+       with model-viewer.loaded already true. */
+    let stopSettle = null;
+    const settleThenDone = () => {
+      if (stopSettle) stopSettle();
+      stopSettle = mvWhenFramesSettle(() => { if (alive) setPhase((p) => (p === "lost" ? p : "done")); });
+    };
+    /* A later `load` on this same run -- model-viewer reloading under us
+       without a src change this effect sees -- goes through the same handover
+       as the first: cube up ("preparing"), wait for drawn frames, reveal. */
+    const onLoad = () => {
+      if (!alive) return;
+      clearTimeout(stallRef.current); clearTimeout(hardRef.current);
+      setPhase((p) => (p === "lost" ? p : "preparing"));
+      settleThenDone();
+    };
 
-    // Not already there: show the loader now, in the commit that armed the
-    // stage. A retry re-runs this effect with the phase already "downloading".
-    setPhase((p) => (p === "waiting" ? "downloading" : p));
+    /* A new src under a car already on show (see the layout effect above).
+       CarStage3D has hidden the old car in the same commit; everything that
+       described the old load is reset here so the new one runs exactly like
+       a first load -- progress from zero, the minimum show time restamped
+       when the cube appears, a fresh dead timer. mv.loaded is not consulted:
+       it may still describe the old file. If the new file already announced
+       `load` (a cached file), it is treated like the "already there" path
+       below: the phase goes to "waiting" (nothing rendered) and only the
+       settle stands between it and the reveal. "lost" is kept either way --
+       the GPU process is gone and no src can bring the car back. */
+    const swap = swapRef.current;
+    swapRef.current = null;
+    if (swap) {
+      targetRef.current = 0;
+      shownAtRef.current = 0;
+      setSlow(false); setHard(false);
+      clearTimeout(stallRef.current); clearTimeout(hardRef.current);
+      if (swap.loaded) {
+        setPhase((p) => (p === "lost" ? p : "waiting"));
+        settleThenDone();
+        mv.addEventListener("load", onLoad);
+        return () => { alive = false; if (stopSettle) stopSettle(); mv.removeEventListener("load", onLoad); };
+      }
+      setPhase((p) => (p === "lost" ? p : "downloading"));
+    } else if (mv.loaded) {
+      // Already there: never show. The phase stays "waiting" (nothing rendered)
+      // until the settle, so the car still arrives on drawn frames. Still
+      // listening for `load`: a re-arm with the same src takes this path, and
+      // without a listener any load after it would never reach "done".
+      settleThenDone();
+      mv.addEventListener("load", onLoad);
+      return () => { alive = false; if (stopSettle) stopSettle(); mv.removeEventListener("load", onLoad); };
+    } else {
+      // Not already there: show the loader now, in the commit that armed the
+      // stage. A retry re-runs this effect with the phase already "downloading".
+      setPhase((p) => (p === "waiting" ? "downloading" : p));
+    }
 
     /* Has the GLB response completed, according to Resource Timing? On a fast
        link the whole download lands before these listeners attach, so the
@@ -14373,7 +14704,8 @@ function ModelLoader({ viewerRef, active, onFailed }) {
       if (raw > targetRef.current) { targetRef.current = raw; armStall(); }
       if (targetRef.current >= 1) setPhase((p) => (settled(p) || p === "error" ? p : "preparing"));
     };
-    const onLoad = () => { if (alive) { clearTimeout(stallRef.current); clearTimeout(hardRef.current); setPhase("done"); } };
+    /* `load` (onLoad, above): parsed, not yet drawn -- "preparing" is the
+       honest label for the settle, and the cube keeps turning through it. */
     // A lost WebGL context also arrives as `error`; the effect below owns it.
     const onError = (e) => {
       if (!alive || (e && e.detail && e.detail.type === "webglcontextlost")) return;
@@ -14388,13 +14720,14 @@ function ModelLoader({ viewerRef, active, onFailed }) {
 
     return () => {
       alive = false;
+      if (stopSettle) stopSettle();
       clearTimeout(stallRef.current);
       clearTimeout(hardRef.current);
       mv.removeEventListener("progress", onProgress);
       mv.removeEventListener("load", onLoad);
       mv.removeEventListener("error", onError);
     };
-  }, [viewerRef, active, attempt]);
+  }, [viewerRef, active, attempt, src]);
 
   /* A lost WebGL context is reported by model-viewer as an `error` event of
      type "webglcontextlost", at any time -- typically long after "done", when
@@ -14430,16 +14763,72 @@ function ModelLoader({ viewerRef, active, onFailed }) {
   /* Fade out and go idle, holding for MV_LOADER_MIN_SHOW_MS if it has not been
      up that long. If it was never visible at all (the fast path) both timers
      are zero, so nothing is ever painted. Idle rather than unmounted: the
-     context-loss listener above has to keep living here. */
+     context-loss listener above has to keep living here.
+     The car is revealed off the fade's start, not at "done": a loader still
+     holding its minimum time would otherwise sit at full strength over a car
+     already growing in underneath it. It trails the fade by
+     MV_CAR_REVEAL_LAG_MS so the cube has mostly cleared first. */
   useEffect(() => {
     if (phase !== "done") return;
     const held = shownAtRef.current
       ? Math.max(0, MV_LOADER_MIN_SHOW_MS - (performance.now() - shownAtRef.current))
       : 0;
+    const lag = shownAtRef.current ? car3dRevealLagMs() : 0;
     const t1 = setTimeout(() => setShown(false), held);
-    const t2 = setTimeout(() => setPhase("idle"), held + MV_LOADER_FADE_MS);
-    return () => { clearTimeout(t1); clearTimeout(t2); };
+    const t3 = setTimeout(() => { if (onReveal) onReveal(true); }, held + lag);
+    /* Never before the reveal: a tuned lag longer than the fade would
+       otherwise unmount the loader first, and cancel t3 with it. */
+    const t2 = setTimeout(() => setPhase("idle"), held + Math.max(car3dLoaderFadeMs(), lag));
+    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
   }, [phase]);
+
+  /* ?tune=1's Replay: re-runs the real handover on a model already loaded —
+     the car drops out (its hide is instant, see the carArrive rule), the cube
+     comes back through its normal entrance, holds for
+     CAR3D_LAB.REPLAY_HOLD_MS, and "done" then exits it and reveals the car
+     exactly as a first load would. Without car3d-lab.jsx `replay` stays 0,
+     so this is inert in production.
+     Four things this has to get right, each a bug it once had:
+       - The cube is re-shown HERE (the rAF below), not by the fade-in effect.
+         That effect is keyed on the phase, and a second Replay inside the
+         hold finds the phase already "preparing": no change, no re-show, and
+         the cube faded out and left the car to pop in with no handover.
+         Restamping shownAtRef each time is also what keeps "done" applying
+         the minimum hold and the tuned car delay.
+       - A first load still settling is left alone (replayingRef tells a hold
+         of our own apart from a real one), so a Replay can never race it.
+       - The hold's end keeps a failed or lost phase: a context lost mid-hold
+         must keep its Reload message, not be overwritten with "done".
+       - The motion CSS is written here and only here after start-up, in the
+         same task that marks the stage not-ready, so the new timeline lands on
+         a car that is already hidden (see setCar3dTune in car3d-lab.jsx for
+         why: a new duration on a resting car restarts its finished arrival). */
+  const lab = useCar3dLab();
+  const replay = lab ? lab.replay : 0;
+  const replayingRef = useRef(false);
+  useEffect(() => {
+    if (!replay) return;
+    const mv = viewerRef.current;
+    const settlingFirstLoad = phase !== "idle" && phase !== "done" && !replayingRef.current;
+    if (!active || !mv || !mv.loaded || phase === "error" || phase === "lost" || settlingFirstLoad) {
+      // No car on show to disturb, so the new values can go in for its reveal.
+      replayingRef.current = false;
+      CAR3D_LAB.applyMotionCss();
+      return;
+    }
+    const stage = mv.closest(".car-stage-3d");
+    if (stage) stage.setAttribute("data-model-ready", "false");
+    CAR3D_LAB.applyMotionCss();
+    replayingRef.current = true;
+    if (onReveal) onReveal(false);
+    setPhase("preparing");
+    const id = requestAnimationFrame(() => { setShown(true); shownAtRef.current = performance.now(); });
+    const t = setTimeout(() => {
+      replayingRef.current = false;
+      setPhase((p) => (p === "lost" || p === "error" ? p : "done"));
+    }, CAR3D_LAB.REPLAY_HOLD_MS);
+    return () => { cancelAnimationFrame(id); clearTimeout(t); };
+  }, [replay]);
 
   /* Hand the failure verdict to CarStage3D, which cannot work it out for itself
      — see its modelFailed comment. `phase` already folds together the error
@@ -14449,38 +14838,6 @@ function ModelLoader({ viewerRef, active, onFailed }) {
   useEffect(() => {
     if (onFailed) onFailed(phase === "error" || phase === "lost");
   }, [phase, onFailed]);
-
-  /* Drives the wireframe AND the label's ellipsis, from one clock — that shared
-     `now` is what actually syncs them. Both are written straight through refs
-     rather than through state, so they animate without re-rendering React 60
-     times a second, which is the reason this component was split out at all.
-     Each ref is re-read every frame, so the dots mounting and unmounting with
-     `phase` needs no special handling.
-     Under reduced motion no loop starts: the path stays at the opening isometric
-     pose it was rendered with, and CSS takes over (it breathes the cube's opacity
-     and pins all three dots on).
-     Depending on [phase] because the <svg> does not exist before the stage is
-     armed or while idle; both helpers read absolute time, so the restart that
-     causes does not make either jump. */
-  const wireRef = useRef(null);
-  const dotsRef = useRef(null);
-  useEffect(() => {
-    if (!wireRef.current) return;
-    let reduce = false;
-    try { reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
-    if (reduce) return;
-    let raf = 0;
-    const frame = () => {
-      const now = performance.now();
-      const el = wireRef.current;
-      if (el) el.setAttribute("d", mvCubeWire(mvCubeYaw(now)));
-      const dots = dotsRef.current;
-      if (dots) dots.setAttribute("data-dots", mvCubeDots(now));
-      raf = requestAnimationFrame(frame);
-    };
-    frame();
-    return () => cancelAnimationFrame(raf);
-  }, [phase]);
 
   const retry = () => {
     const mv = viewerRef.current;
@@ -14504,7 +14861,9 @@ function ModelLoader({ viewerRef, active, onFailed }) {
     : phase === "error" ? (hard ? "تعذّر عرض النموذج" : targetRef.current > 0 ? "تعذّر تحميل النموذج" : "تعذّر بدء التحميل")
     /* No trailing "…" on the loading labels — the animated .bs-dots below
        supply it, and a literal ellipsis next to them reads as six dots. */
-    : phase === "preparing" ? "جاري التجهيز"
+    /* "done" keeps the preparing line: it is always the phase just before,
+       and the label must not change under the fade-out. */
+    : phase === "preparing" || phase === "done" ? "جاري التجهيز"
     : slow ? "الاتصال بطيء… التحميل مستمر"
     : "جاري عرض السيارة";
 
@@ -14517,31 +14876,18 @@ function ModelLoader({ viewerRef, active, onFailed }) {
       aria-live="polite"
       aria-label={label}
     >
-        {/* One path holding all the cube's visible edges, re-projected each frame
-            by the effect above. Rendered with the opening isometric pose already in
-            place so the first paint is the finished drawing rather than an empty
-            box — and so reduced motion, which never starts the loop, still gets a
-            cube. */}
-        <svg className="mv-cube" viewBox="0 0 48 48" width="80" height="80" aria-hidden="true">
-          <path className="mv-cube-wire" ref={wireRef} d={mvCubeWire(45)} />
-        </svg>
+        <LoaderCube />
       <div className="mv-loader-line">
         {/* Dots live INSIDE the text span, trailing the label as part of its
             RTL run, so .bs-dots' own margin-inline-start sets the spacing. They
-            render only while something is genuinely loading: an error is not,
-            and at "done" the label still reads "downloading" through the
-            fade-out. aria-hidden keeps a chattering ellipsis out of the
-            aria-live region (the whole loader already announces itself via
-            aria-label).
-            data-dots is written every frame by the effect above, from the same
-            clock as the cube. The initial "1" matches what mvCubeDots returns at
-            the top of a cycle, so the first paint is already a valid state
-            rather than an empty gap. */}
+            render only while something is genuinely loading — an error is not
+            — and through the "done" fade-out, so the line leaves unchanged.
+            LoaderDots is aria-hidden, which keeps a chattering ellipsis out of
+            the aria-live region (the whole loader already announces itself via
+            aria-label). */}
         <span className="mv-loader-text">
           {label}
-          {(phase === "downloading" || phase === "preparing") && (
-            <span className="bs-dots" ref={dotsRef} data-dots="1" aria-hidden="true"><span></span><span></span><span></span></span>
-          )}
+          {(phase === "downloading" || phase === "preparing" || phase === "done") && <LoaderDots />}
         </span>
         {/* Reload is offered in every failed state: after a lost context it is
             the only way back, and after a network failure it is what a user
@@ -14571,7 +14917,13 @@ function CarStage3D({ car, isOpen, onPickZone, onPickHotspot, onStageState, chil
   const [viewIndex, setViewIndex] = useState(0);
   const [rotating, setRotating] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [modelLoaded, setModelLoaded] = useState(false);
+  /* The car is on screen: set by ModelLoader's onReveal once the first frames
+     are really drawn, NOT at model-viewer's `load` (see MV_SETTLE_GAP_MS).
+     Drives the fade and the arrival (data-model-ready) and everything staged
+     after them. */
+  const [revealed, setRevealed] = useState(false);
+  // car3d-lab.jsx's shadow and exposure dials (null without the lab).
+  const lab = useCar3dLab();
   /* Nothing is going to arrive. Reported by ModelLoader rather than detected
      here, because a plain `error` listener on model-viewer is NOT enough: an
      aborted or refused request surfaces as a thrown fetch inside the element and
@@ -14652,31 +15004,47 @@ function CarStage3D({ car, isOpen, onPickZone, onPickHotspot, onStageState, chil
       if (mv.getCameraTarget) baseTargetRef.current = car3dParseVec(mv.getCameraTarget());
     };
     /* A lost WebGL context (model-viewer reports it as an `error` of type
-       "webglcontextlost") leaves a garbage canvas: drop modelLoaded so the
+       "webglcontextlost") leaves a garbage canvas: drop `revealed` so the
        viewer fades out and ModelLoader's reload message sits on a clean stage.
        Attached before the loaded check so it holds for the stage's whole life. */
-    const onLost = (e) => { if (e && e.detail && e.detail.type === "webglcontextlost") setModelLoaded(false); };
+    const onLost = (e) => { if (e && e.detail && e.detail.type === "webglcontextlost") setRevealed(false); };
     mv.addEventListener("error", onLost);
-    // The look profile goes on before modelLoaded flips, so the cross-fade
-    // reveals the car already in the shared colours rather than repainting it
-    // in view.
-    if (mv.loaded) { applyLookProfile(mv, car); captureBaseFov(); setModelLoaded(true); return () => mv.removeEventListener("error", onLost); }
-    const onLoad = () => { applyLookProfile(mv, car); captureBaseFov(); setModelLoaded(true); };
+    // The look profile goes on at load, before ModelLoader starts waiting for
+    // the frames to settle — so the recompile it forces is part of that wait,
+    // and the car is revealed already in the shared colours rather than
+    // repainted in view. This listener is attached at mount, ahead of
+    // ModelLoader's, so it always runs first.
+    if (mv.loaded) { applyLookProfile(mv, car3dCarFor(car)); captureBaseFov(); return () => mv.removeEventListener("error", onLost); }
+    const onLoad = () => { applyLookProfile(mv, car3dCarFor(car)); captureBaseFov(); };
     mv.addEventListener("load", onLoad);
     return () => { mv.removeEventListener("load", onLoad); mv.removeEventListener("error", onLost); };
   }, []);
 
-  /* Hotspots wait a beat after the model lands -- see MV_HOTSPOT_STAGGER_MS.
+  /* The src model-viewer is given: the car's file, or the lab's draft of it
+     while the Build tab is previewing one (car3dSrcFor). When it changes under
+     a car already on show, the car is hidden first, so the new file arrives
+     through the normal handover instead of popping in over the old one:
+     ModelLoader gets the same src, and on a change it re-runs its load watch
+     from the start (cube up, progress from zero, wait for drawn frames,
+     reveal). Only a CHANGE hides: the first arming is the ordinary first load. */
+  const liveSrc = armed ? car3dSrcFor(model.src) : undefined;
+  const prevSrcRef = useRef(liveSrc);
+  useEffect(() => {
+    if (prevSrcRef.current && liveSrc && prevSrcRef.current !== liveSrc) setRevealed(false);
+    prevSrcRef.current = liveSrc;
+  }, [liveSrc]);
+
+  /* Hotspots wait for the car's arrival to finish -- see MV_HOTSPOT_STAGGER_MS.
      Reset on unload so a reopened screen stages the reveal again. */
   const [hotspotsReady, setHotspotsReady] = useState(false);
   useEffect(() => {
-    if (!modelLoaded) { setHotspotsReady(false); return; }
-    const t = setTimeout(() => setHotspotsReady(true), MV_HOTSPOT_STAGGER_MS);
+    if (!revealed) { setHotspotsReady(false); return; }
+    const t = setTimeout(() => setHotspotsReady(true), car3dHotspotStaggerMs());
     return () => clearTimeout(t);
-  }, [modelLoaded]);
+  }, [revealed]);
 
   /* The flank tags' one showing per opening. Gated on hotspotsReady, not
-     modelLoaded, so they arrive on the same beat as the ring, the hint and the
+     revealed, so they arrive on the same beat as the ring, the hint and the
      dots rather than over a stage that is still a loading cube.
      sideTagSeenRef is what makes it ONCE: it clears only when the screen
      closes, so a lost-context recovery inside a single opening does not replay
@@ -15332,10 +15700,10 @@ function CarStage3D({ car, isOpen, onPickZone, onPickHotspot, onStageState, chil
       <div
         className="car-stage-3d"
         data-hotspots-hidden={rotating || dragging || !hotspotsReady}
-        /* Cross-fades model-viewer in as the loader leaves. modelLoaded, not
-           hotspotsReady — the car arrives on the beat the cube goes, the dots
-           follow 300ms later. */
-        data-model-ready={modelLoaded ? "true" : "false"}
+        /* Fades model-viewer in and plays its arrival as the loader leaves.
+           revealed, not hotspotsReady — the car arrives on the beat the cube
+           goes, the dots follow once it has settled. */
+        data-model-ready={revealed ? "true" : "false"}
         /* No pointer handler here any more — the swipe surface is .car-swipe
            above. Dev-only anchor authoring stays on this box: undefined (no
            listener at all) without ?anchors=1. See onAnchorClick. */
@@ -15346,7 +15714,7 @@ function CarStage3D({ car, isOpen, onPickZone, onPickHotspot, onStageState, chil
           /* The url comes from the CARS registry (bump its ?v= there). No src
              at all until the first open: React omits the attribute while
              `armed` is false, and model-viewer loads nothing without one. */
-          src={armed ? model.src : undefined}
+          src={liveSrc}
           /* No `poster` attribute on purpose: the stage shows nothing but the
              cube and its caption while loading. A still of the car was tried
              here and dropped — between it, a progress bar and a percentage,
@@ -15358,15 +15726,17 @@ function CarStage3D({ car, isOpen, onPickZone, onPickHotspot, onStageState, chil
           loading="eager"
           alt="نموذج ثلاثي الأبعاد للسيارة"
           camera-orbit={car3dOrbitAt(camera, 0)}
-          shadow-intensity="1"
+          /* The three light values below are the shipped ones; ?tune=1's
+             dials replace them live (car3d-lab.jsx's defaults mirror them). */
+          shadow-intensity={lab ? String(lab.shadowIntensity) : "1"}
           /* 0.45, not model-viewer's softer default look: at 0.75 the blur is
              wide enough to leak light through a dense underbody, and the
              Maxima's ground shadow came out with bright holes around the
              exhaust tips and a patchy middle. The other three barely change
              between the two values -- their shadow just sits a little
              tighter. */
-          shadow-softness="0.45"
-          exposure="0.9"
+          shadow-softness={lab ? String(lab.shadowSoftness) : "0.45"}
+          exposure={lab ? String(lab.exposure) : "0.9"}
         >
           {/* Replaces model-viewer's built-in progress bar (part=
               "default-progress-bar") — a 5px gray bar pinned across the top of
@@ -15383,7 +15753,7 @@ function CarStage3D({ car, isOpen, onPickZone, onPickHotspot, onStageState, chil
         {/* Inside the stage, not under it: the loader now sits on the car's own
             optical centre, which is where the eye already is. Idle until the
             stage is armed, so its timers only ever run against a real load. */}
-        <ModelLoader viewerRef={viewerRef} active={armed} onFailed={setModelFailed} />
+        <ModelLoader viewerRef={viewerRef} active={armed} src={liveSrc} onFailed={setModelFailed} onReveal={setRevealed} />
         {/* After the loader in the tree, so they paint over the car rather than
             under it. aria-hidden: the zone ring above already names these two
             sides to a screen reader, and this is its visual echo, not a second
@@ -15403,6 +15773,11 @@ function CarStage3D({ car, isOpen, onPickZone, onPickHotspot, onStageState, chil
         </div>
       </div>
       </div>
+      {/* ?tune=1 only, and only while this screen is up with a car to tune. A
+          portal to <body>; it stops its own pointerdowns so a slider drag
+          never rotates the car (see Car3DTuner in car3d-lab.jsx). Gone on a failed or lost
+          load, where it would only sit over the loader's Retry / Reload. */}
+      {CAR3D_LAB && isOpen && (!modelFailed || (CAR3D_LAB.previewing && CAR3D_LAB.previewing())) && <CAR3D_LAB.Panel car={car} viewerRef={viewerRef} />}
     </div>
   );
 }
@@ -15838,7 +16213,7 @@ function Locate3DScreen({ car, isOpen, onClose, onCart, cartCount = 0, drawerOpe
   /* "loading" | "ready" | "failed", reported up from CarStage3D — everything
      this screen needs to know about the stage. Deliberately NOT reset by the
      per-open effect below, for the same reason the stage never resets
-     modelLoaded: the GLB stays loaded, so a reopened screen should show its
+     revealed: the GLB stays loaded, so a reopened screen should show its
      content straight away rather than replay the reveal over a visible car.
      It DOES reset on a car switch, but through the stage's remount
      (key={car.id} at the call site): the fresh stage's notify effect reports
@@ -15981,7 +16356,7 @@ function Locate3DScreen({ car, isOpen, onClose, onCart, cartCount = 0, drawerOpe
       {/* key={car.id}: a car switch is a new GLB, and everything inside the
           stage — `armed` (a switched-to car waits for its own tap), the loader
           with its progress/stall/dead timers, the captured base FOV and camera
-          target, zoom, viewIndex, ringAngle, modelLoaded — was captured for
+          target, zoom, viewIndex, ringAngle, revealed — was captured for
           the old one. Swapping `src` in place left all of it
           stale: no loader for the second car, old hotspots floating at old
           anchors until the new model landed. Remounting is cheap because the
