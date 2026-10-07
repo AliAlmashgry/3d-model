@@ -1,0 +1,231 @@
+HOW TO ORGANIZE visual-search-standalone/index.html IF ALL THE CODE WILL BE USED
+================================================================================
+
+This is based on a dependency map of all 351 top-level definitions in
+index.html. For each one I worked out which screens use it, and that decides
+where it goes. The design workflow I launched failed (every agent hit the
+session limit), so this is my own design, not checked by a second agent.
+I did check the three risky points against the code: the /__lab routes,
+the module-level variables that get reassigned, and the router that's missing.
+
+Line numbers below refer to visual-search-standalone/index.html as of 2026-10-01.
+
+
+USE VITE INSTEAD OF ESBUILD
+---------------------------
+
+I recommended esbuild before because the live part was only about 4k lines and
+keeping double-click (file://) mattered more. With 20k lines of storefront going
+live (home, search, category listing, product page, cart, blog, 3D), Vite is the
+better fit:
+  - It reloads instantly while you edit.
+  - It uses real npm React in production builds, instead of loading React from
+    a CDN and compiling the JSX in the browser.
+  - It can load each screen only when it's opened. The 3D screen and
+    model-viewer are the heaviest part, and most visitors never open them.
+
+The cost: double-clicking index.html stops working. You'd use `npm run dev`, or
+open the built dist/ from a server.
+
+
+THE RULES
+---------
+
+1. Code lives where it's used. If only one screen uses something, it goes in
+   that screen's folder. If two or more screens use it, it goes down a level:
+   data and plain logic to domain/, React components to shared/. Use by the
+   demo screens doesn't count.
+
+2. Imports only point downward: app -> features -> shared / domain.
+   domain/ has no React and no imports from above it. Screens never import
+   each other; to open another screen they call navigate("/p/"+key), which the
+   code already does.
+
+3. Each component imports its own CSS. Declare
+   @layer base, shared, features, dev;
+   once, so the order rules apply in doesn't depend on import order. Today some
+   rules only win because they come later in the file (for example .loc-carbar
+   overriding .car-bar).
+
+4. Demos and the 3D tuning lab live in dev/. They're only reachable in
+   development, and never from production code.
+
+
+THE TREE (line numbers are where each piece is now)
+---------------------------------------------------
+
+visual-search-standalone/
+  index.html              ~15 lines: #root + <script type="module" src="/src/main.jsx">
+  vite.config.js          React plugin, base './', proxy '/__lab' -> lab-server :3000
+  package.json            react, react-dom, @google/model-viewer
+                          dev: vite, vitest, eslint
+  public/
+    car-registry.js       CARS entries 14017-14096, ONE car per line (lab-server edits this)
+    assets/               GLBs + images, unchanged (LFS)
+  src/
+    main.jsx              iOS zoom guard 8022-8049
+                          if ?tune=1 -> await import('./dev/lab')
+                          render
+    app/
+      App.jsx             NEW router App: useHashRoute -> screens (the original is lost)
+      routes.js           /home /select-car /spare-parts/:cat /p/:key /locate /locate-3d
+                          /blog/:slug (+ /demo/* in dev only)
+                          lazy() per screen, modal routes (isModalRoute 9310)
+      providers/          CartProvider (cart persistence 11838-11866)
+                          GarageProvider (garage + selected car 11779-11837, loadCarId 14116)
+                          -> replaces App changing CURRENT_CAR during render (20375-20377)
+      session/tester.js   8458-8507
+      shell/              Header 8431, Drawer 8510, SiteFooter 17723, Placeholder 9374,
+                          VssHome 20294
+    features/
+      home/               HomeScreen 9360, AnchoredHome 11868, SelectorCard 8876-9131,
+                          sections 9134-9262, Hero/TrustBadges 8843-8870,
+                          carPicker.js (MAKES/MODELS/YEARS 8073-8109)
+      search/             DiscoveryScreen 12348-12750
+                          terms.js 11157-11257 + 12290-12325
+      discover/           DiscoverScreen 19343-20279 (break into sections/)
+                          filters.js 18571-18717 (pure, tested)
+                          rails 18744-18854, FilterSheet, PositionPickerSheet, Paginator,
+                          skeletons
+                          content.js 11307-11494 (collections, symptoms, FAQ)
+      pdp/                ProductDetailScreen 17345-17689
+                          sections/ (Gallery, Price, Installments, Seller, Cta, Details,
+                                     Fitment, FAQ, Reviews, Alternatives, Related)
+                          sheets/   (Vin, Installment, City, MakeInfo, ConfidenceInfo,
+                                     PhotoInfo)
+                          FitGuarantee 16533-16725
+                          enrich.js (KIND_DETAILS, KIND_FAQ, VENDORS 9908-10394)
+      cart/               CartDrawer 8622-8840, cartTitle
+      blog/               BlogScreen 18488, posts.js 11356-11447
+      locate/             shared by 2D+3D: PartsSheet 15692, useSheetBackLevel,
+                          ZoneRing 12910-13055, partChip.js 11090-11135,
+                          resolve.js 11704-11730, useLocateScreen (dedupe)
+        2d/               LocateScreen 15917, CarOrbit 13057, CarModel + diagrams 12761-12886
+        3d/               Locate3DScreen 16110
+                          CarStage3D 14810-15686 (split into useStageGestures, useStageZoom)
+                          config + orbitMath + lookProfile 13288-13553
+                          loader/ 14141-14808
+                          labBridge.js 14206-14222
+    domain/               no React; every file here gets unit tests
+      catalog/            products.js 9741-9833
+                          catalog.js 10669-10944
+                          taxonomy.js (partKind, derivePos, positions, KIND_PRICE 10397-10669)
+                          categories.js 10953-11084
+                          findProduct.js 9858-9899
+      locate/zones.js     LOC_* tables 11506-11691
+      cars/               registry.js (reads public/car-registry.js)
+                          carNames.js 13625-13751
+                          hotspots.js 13579-13623
+                          images.js 11739-11765
+      text/arabic.js      normalizeArabic 11140
+    shared/
+      ui/                 icons.jsx 8123-8417, Riyal, ProductImage 9405, ProductCard 9699,
+                          MakeTag, DeliveryBadge, PositionGlyph 9538, SearchResultRow 12246,
+                          SkeletonRow 19277, BottomSheet 18945, SideSheet 18907,
+                          PaymentChip 17703, CarBar
+      router/             useHashRoute, navigate, navigateReplace, navState.js
+      search/session.js   the search hand-off state (see WATCH OUT below)
+      lib/                price.js 9392-9394, storage.js, analytics.js 11262
+      styles/             tokens.css + reset.css (lines 16-118)
+    dev/
+      demos/              demo cards 17754-18486, VsdWheel 12215-12239, their CSS
+      lab/car3d-lab.jsx
+  docs/                   car-pipeline.md (the 264-line manual at 13753-14016)
+                          architecture.md
+
+Roughly how much code each area gets:
+
+  PDP          about 1,800 lines
+  3D locate    about 1,600
+  Discover     about 1,350
+  Home         about   790
+  Demos        about   700
+  Shell        about   650
+  Search       about   520
+  2D locate    about   490
+  Cart         about   230
+  Blog         about   155
+  Shared by several screens (catalog data, icons, sheets, product bits)
+               about 1,500
+
+
+WHERE THE CSS GOES
+------------------
+
+Split the 8,000 lines by the existing section comments:
+
+  CSS lines     Goes to
+  16-118        shared/styles
+  121-452       shell (Header, Drawer)
+  453-1635      home
+  1636-1668     cart
+  1971-2379     search
+  2380-3622     locate (2D/3D/loader/sheet)
+  3624-5965     pdp
+  5966-6787     discover
+  6788-6859     shared skeletons
+  6860-7443     shared sheets + discover filters
+  7444-7448     shell footer
+  7449-7935     blog
+  7936-8016     VssHome
+  about 2,000 lines of demo variants -> dev/demos
+
+The demo variants are 1669-1970, 3847-4877, the applied-summary variants from
+6330, and the sheet-shape variants 6986-7250.
+
+Before cutting, move some shared rules out of the home and search sections,
+because the locate screens depend on them:
+  - .car-bar (1089-1101 and 1228-1237)
+  - .bs-dots (1363-1371)
+  - .tag and .deliv-* (1436-1503)
+  - .sresult and .sfilter (2298-2367)
+
+
+WATCH OUT
+---------
+
+- Module-level variables reassigned from other screens. Imports in ES modules
+  are read-only, and these variables get reassigned from more than one place:
+    - _searchCommitReset and _lastSearchQuery are set by the search overlay
+      (12428) and by Discover (19400-19450).
+    - PENDING_SEARCH_QUERY is set at 12407.
+    - _enterCarAtTop is set at 11933.
+  Moved into separate files as they are, each of those assignments would throw
+  a TypeError. Wrap them in one object per concern (navState, searchSession) or
+  give them setter functions.
+
+- The router has to be rebuilt. The prototype's original routing App is gone;
+  only useHashRoute, navigate and isModalRoute remain. Wiring every screen up
+  means writing app/App.jsx and routes.js from scratch.
+
+- lab-server. Change its INDEX path to public/car-registry.js; its regex and the
+  one-car-per-line format stay the same. Every lab API call goes through
+  /__lab/*, so the single Vite proxy rule covers it, draft previews included.
+  The ?tune=1 lab becomes a dynamic import() that finishes before the first
+  render. That avoids the load-order trap where the app reads window.car3dLab
+  before the lab has run.
+
+- Headless tests. .render/page.mjs should point at `vite preview`. The selectors
+  (#vss-car, .vss-card, data-model-ready) don't change.
+
+
+ORDER OF WORK
+-------------
+
+1. Commit. Commit your uncommitted work and tag it.
+2. Set up Vite. Add the Vite scaffold and move the whole <script> into
+   src/legacy.jsx and the whole <style> into legacy.css, unchanged. Get the page
+   working on Vite.
+3. Fix the mutable variables. Turn them into objects or setters. Fix any errors
+   that Babel's const->var conversion was hiding.
+4. Write tests first. Add tests that lock in today's output from the domain/
+   data (catalog rows, partKind, findProduct, car names).
+5. Move files out, starting from the bottom. Go domain -> shared -> each
+   feature -> app, one commit per folder, moving code without changing it.
+6. Move the CSS beside its components. Do it per feature, comparing screenshots
+   of the main screens before and after each move.
+7. Build the router App and the providers. Wire up each screen one at a time,
+   starting with home, then discover, search, pdp, cart and blog.
+8. Only then refactor. Remove the duplicate code in the two locate screens,
+   split up CarStage3D and break up DiscoverScreen. Fix the known bugs at this
+   point too.
