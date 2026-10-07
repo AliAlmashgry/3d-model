@@ -13381,11 +13381,18 @@ const CAR_LOOK_SLOTS = ["paint", "interior", "wheel", "seat", "taillight", "glas
 function applyLookProfile(mv, car) {
   const look = (car.model && car.model.look) || null;
   if (!mv.model || !look) return;
+  /* A file the lab's Cabin tool (tools/cabin-black.mjs) has run on carries the
+     whole cabin in one Interior_Black material, so the interior (and the
+     Camry's steering-wheel `wheel`) names it merged away are gone on purpose.
+     They stay listed so a Restore of the pre-black file paints its cabin
+     again; here they are simply skipped, not reported. */
+  const cabinBlack = mv.model.materials.some((m) => /^Interior_Black\b/.test(m.name) && (look.interior || []).includes(m.name));
   for (const slot of CAR_LOOK_SLOTS) {
     const recipe = CAR_LOOK_PROFILE[slot];
     for (const name of look[slot] || []) {
       const mat = mv.model.materials.find((m) => m.name === name);
       if (!mat) {
+        if (cabinBlack && (slot === "interior" || slot === "wheel")) continue;
         console.warn("[CARS] \"" + car.id + "\": look." + slot + " material \"" + name + "\" not found; this file has: " + mv.model.materials.map((m) => m.name).join(", "));
         continue;
       }
